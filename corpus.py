@@ -31,16 +31,16 @@ def get_by_party(folder, party):
 
     corpus = []
     for xml in load_from_disk(folder):
-         speeches = xml.xpath(f'//pm:speech[@pm:party = "{party}"]',
-                              namespaces=XMLNS)
+        speeches = xml.xpath(f'//pm:speech[@pm:party = "{party}"]',
+                             namespaces=XMLNS)
 
-         for speech in speeches:
-             text = '\n'.join(speech.xpath('pm:p/text()', namespaces=XMLNS))
-             corpus.append(text)
+        for speech in speeches:
+            text = '\n'.join(speech.xpath('pm:p/text()', namespaces=XMLNS))
+            corpus.append(text)
 
     with open(pickle_name, 'wb') as f:
         pickle.dump(corpus, f)
-            
+
     return corpus
 
 

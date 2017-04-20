@@ -1,5 +1,6 @@
 import sys
 import corpus
+import readline
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
@@ -13,13 +14,13 @@ from collections import namedtuple
 import numpy as np
 import scipy
 import matplotlib.pyplot as plt
-from IPython import embed
 
 plt.style.use('ggplot')
 
 
-# boek
-#parties = [('CDU/CSU', 13.6),
+# alternatieve waarden voor links/rechtsheid genomen uit
+# http://www.nyu.edu/gsas/dept/politics/faculty/laver/PPMD_draft.pdf
+# parties = [('CDU/CSU', 13.6),
 #           ('DIE LINKE', 3.6),
 #           ('SPD', 8.4),
 #           ('BÜNDNIS 90/DIE GRÜNEN', 7.1)]
@@ -38,9 +39,11 @@ newspapers = ['Die Welt', 'Frankfurter Neue Presse', 'Taz, die Tageszeitung']
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
 
+
 def get_train_test_data(folder, test_size):
     """
     Return the raw input data and labels, split into training and test data.
+    folder: the folder containing the xml files to learn on
     test_size: the ratio of testing data (i.e. between 0 and 1)
     """
     all_speeches = []
@@ -56,7 +59,7 @@ def get_train_test_data(folder, test_size):
     y = np.array(all_labels)
 
     data = Data(*train_test_split(X, y, test_size=test_size))
-    
+
     return data
 
 
@@ -76,10 +79,13 @@ def create_model(k):
     model = LinearSVR()
 
     return make_pipeline(vectorizer, kbest, model)
-    
+
 
 def get_rightness(model, X):
-    """ Return the mean of the predictions """
+    """
+    Return the mean of the predictions, giving a measure of how rightwing the
+    given texts are.
+    """
     predictions = model.predict(X)
     return np.mean(predictions)
 
@@ -88,7 +94,7 @@ def predict_party_rightness(model, X, y):
     """ Calculate the average score per party """
 
     rightnesses = [get_rightness(model, X[y == label])
-                            for _, label in parties]
+                   for _, label in parties]
 
     # get the data in a nice table for pretty printing
     rows = [[parties[i][0], rightnesses[i], parties[i][1]]
@@ -100,7 +106,7 @@ def predict_party_rightness(model, X, y):
     left_to_right = sorted([(rightness, name) for rightness, (name, _)
                             in zip(rightnesses, parties)])
     expected = sorted([(rightness, name) for name, rightness
-                            in parties])
+                       in parties])
 
     print()
     print(f'Sorted from left to right: \t{", ".join([a[1] for a in left_to_right])}')
@@ -109,7 +115,7 @@ def predict_party_rightness(model, X, y):
 
 
 def test_k():
-    """ Plot the MSE for selecting the K best features """
+    """ Plot the MSE for selecting the K best features, for various values of K """
     mses = []
     ks = [10, 100, 500, 1000, 2500, 5000, 7500, 10000, 50000, 100000]
     for k in ks:
@@ -136,11 +142,30 @@ def test_newspapers(model):
     print()
 
 
+def interactive(model):
+    while True:
+        print('=> ', end='')
+        sys.stdout.flush()
+        text = sys.stdin.read()
+
+        if text == '':
+            break
+
+        y = model.predict([text])
+        print(f'Output: {y}')
+
+
 def main():
     if len(sys.argv) > 2 and sys.argv[2] == '--testk':
         test_k()
     else:
         k = 50000
+
+    if len(sys.argv) > 2 and sys.argv[2] == '--interactive':
+        model = create_model(k)
+        data = get_train_test_data(sys.argv[1], 0.01)
+        model.fit(data.X_train, data.y_train)
+        return interactive(model)
 
     model = create_model(k)
     data = get_train_test_data(sys.argv[1], 0.20)
