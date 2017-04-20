@@ -90,6 +90,24 @@ def get_rightness(model, X):
     return np.mean(predictions)
 
 
+def plot_party_predictions(model, X, y):
+    plt.figure()
+
+    for party, label in parties:
+        # get this party's predictions
+        predictions = model.predict(X[y == label])
+
+        # create and plot histogram
+        count, bin_edges = np.histogram(predictions, bins=20)
+        bincenters = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+        plt.plot(bincenters, count, label=party)
+
+    plt.legend()
+    plt.xlabel('score')
+    plt.ylabel('count')
+    plt.show()
+
+
 def predict_party_rightness(model, X, y):
     """ Calculate the average score per party """
 
@@ -187,6 +205,7 @@ def main():
     print()
 
     predict_party_rightness(model, data.X_test, data.y_test)
+    plot_party_predictions(model, data.X_test, data.y_test)
     test_newspapers(model)
 
 
