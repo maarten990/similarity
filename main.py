@@ -2,8 +2,9 @@ import os.path
 import sys
 from collections import namedtuple
 
-import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
+from scipy import sparse
 
 from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -13,16 +14,14 @@ from sklearn.metrics import (explained_variance_score, mean_squared_error,
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import FunctionTransformer
 
-from keras.models import Sequential
-from keras.layers import Dense, Activation
+from keras.models import Sequential, load_model
+from keras.layers import Dense, Activation, Dropout
 from keras.wrappers.scikit_learn import KerasRegressor
 
 import corpus
 from tabulate import tabulate
-
-
-plt.style.use('ggplot')
 
 
 # alternatieve waarden voor links/rechtsheid genomen uit
@@ -41,7 +40,7 @@ parties = [('CDU/CSU', 5.92),
            ('SPD', 3.77),
            ('BÜNDNIS 90/DIE GRÜNEN', 3.61)]
 
-newspapers = ['taz']
+newspapers = ['diewelt', 'taz']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
@@ -71,14 +70,30 @@ def get_train_test_data(folder, test_size):
 
 
 def uncentered_f_regression(a, b):
-    """ Needed because lambda's can't be pickled. """
+    """
+    Needed because lambdas can't be pickled and sparse matrices can't be
+    centered.
+    """
     return f_regression(a, b, center=False)
 
 
+def ensure_dense(X, *args, **kwargs):
+    """ If the input is a sparse matrix, convert it to a dense one. """
+    if sparse.issparse(X):
+        # todense() returns a matrix, so convert it to an array
+        return np.asarray(X.todense())
+    else:
+        return X
+
+
 def create_neuralnet(k):
+    """ Create a simple feedforward Keras neural net with k inputs """
     model = Sequential([
-        Dense(500, input_dim=k, dropout=0.2),
-        Dense(1, dropout=0.2),
+        Dense(512, input_dim=k),
+        Dropout(0.2),
+        Dense(48),
+        Dropout(0.2),
+        Dense(1),
         Activation('relu'),
     ])
 
@@ -86,21 +101,43 @@ def create_neuralnet(k):
     return model
 
 
-def create_model(k):
+def create_model(k, use_keras):
     """
     Return an sklearn pipeline.
     k: the number of features to select
     """
 
-    # preprocessing steps: TFID vectorizers and dimensionality reducting
+    # preprocessing steps: TFIDF vectorizer, dimensionality reduction, and
+    # conversion from sparse to dense matrices because Keras doesn't support
+    # sparse
     vectorizer = TfidfVectorizer()
     kbest = SelectKBest(uncentered_f_regression, k=k)
+    unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
 
-    # model = LinearSVR()
-    model = MLPRegressor(hidden_layer_sizes=(500,), verbose=True)
-    # model = KerasRegressor(create_neuralnet, k=k, epochs=10, batch_size=32)
+    if use_keras:
+        model = KerasRegressor(create_neuralnet, k=k, epochs=2, batch_size=32)
+    else:
+        model = MLPRegressor(hidden_layer_sizes=(500,), verbose=True)
 
-    return make_pipeline(vectorizer, kbest, model)
+    return make_pipeline(vectorizer, kbest, unsparse, model)
+
+
+def save_pipeline(model, data, path):
+    if 'kerasregressor' in model.named_steps:
+        nnet = model.named_steps['kerasregressor']
+        nnet.model.save('nnet.h5')
+        model.named_steps['kerasregressor'] = None
+
+    joblib.dump((model, data), path)
+
+
+def load_pipeline(path, keras=False):
+    model, data = joblib.load(path)
+
+    if keras:
+        model.named_steps['kerasregressor'] = load_model('nnet.h5')
+
+    return model, data
 
 
 def get_rightness(model, X):
@@ -113,21 +150,13 @@ def get_rightness(model, X):
 
 
 def plot_party_predictions(model, X, y):
-    plt.figure()
-
     for party, label in parties:
-        # get this party's predictions
         predictions = model.predict(X[y == label])
+        ax = sns.distplot(predictions, label=party, axlabel='Political rightness')
 
-        # create and plot histogram
-        count, bin_edges = np.histogram(predictions, bins=20, density=True)
-        bincenters = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-        plt.plot(bincenters, count, label=party)
-
-    plt.legend()
-    plt.xlabel('score')
-    plt.ylabel('count')
-    plt.savefig('histogram.png')
+    ax.legend()
+    fig = ax.get_figure()
+    fig.savefig('kde.png')
 
 
 def predict_party_rightness(model, X, y):
@@ -167,15 +196,17 @@ def test_newspapers(model):
 
 def main():
     k = 50000
+    use_keras = True
 
     model_path = 'model.pkl'
 
     if os.path.exists(model_path):
         print('Loading model from disk')
-        model, data = joblib.load(model_path)
+        model, data = load_pipeline(model_path, use_keras)
     else:
         data = get_train_test_data(sys.argv[1], 0.20)
-        model = create_model(k)
+        model = create_model(k, use_keras)
+        save_pipeline(model, data, model_path)
 
         print(f'Training model on data {len(data.X_train)} samples')
         model.fit(data.X_train, data.y_train)
