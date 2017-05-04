@@ -1,11 +1,9 @@
 import os.path
-import readline
 import sys
 from collections import namedtuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy
 
 from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -15,10 +13,14 @@ from sklearn.metrics import (explained_variance_score, mean_squared_error,
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
-from sklearn.svm import LinearSVR
+
+from keras.models import Sequential
+from keras.layers import Dense, Activation
+from keras.wrappers.scikit_learn import KerasRegressor
 
 import corpus
 from tabulate import tabulate
+
 
 plt.style.use('ggplot')
 
@@ -39,7 +41,7 @@ parties = [('CDU/CSU', 5.92),
            ('SPD', 3.77),
            ('BÜNDNIS 90/DIE GRÜNEN', 3.61)]
 
-newspapers = ['Die Welt', 'Frankfurter Neue Presse', 'Taz, die Tageszeitung']
+newspapers = ['taz']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
@@ -68,6 +70,22 @@ def get_train_test_data(folder, test_size):
     return data
 
 
+def uncentered_f_regression(a, b):
+    """ Needed because lambda's can't be pickled. """
+    return f_regression(a, b, center=False)
+
+
+def create_neuralnet(k):
+    model = Sequential([
+        Dense(500, input_dim=k, dropout=0.2),
+        Dense(1, dropout=0.2),
+        Activation('relu'),
+    ])
+
+    model.compile(optimizer='rmsprop', loss='mse')
+    return model
+
+
 def create_model(k):
     """
     Return an sklearn pipeline.
@@ -76,13 +94,11 @@ def create_model(k):
 
     # preprocessing steps: TFID vectorizers and dimensionality reducting
     vectorizer = TfidfVectorizer()
-    kbest = SelectKBest(lambda a, b: f_regression(a, b, center=False), k=k)
+    kbest = SelectKBest(uncentered_f_regression, k=k)
 
-    # The linear support vector regression seems to offer both the best
-    # performance and quickest training, but can probably be improved upon with
-    # some more experimentation.
-    #model = LinearSVR()
-    model = MLPRegressor(hidden_layer_sizes=(1000, 250), verbose=True)
+    # model = LinearSVR()
+    model = MLPRegressor(hidden_layer_sizes=(500,), verbose=True)
+    # model = KerasRegressor(create_neuralnet, k=k, epochs=10, batch_size=32)
 
     return make_pipeline(vectorizer, kbest, model)
 
@@ -104,14 +120,14 @@ def plot_party_predictions(model, X, y):
         predictions = model.predict(X[y == label])
 
         # create and plot histogram
-        count, bin_edges = np.histogram(predictions, bins=20)
+        count, bin_edges = np.histogram(predictions, bins=20, density=True)
         bincenters = 0.5 * (bin_edges[1:] + bin_edges[:-1])
         plt.plot(bincenters, count, label=party)
 
     plt.legend()
     plt.xlabel('score')
     plt.ylabel('count')
-    plt.show()
+    plt.savefig('histogram.png')
 
 
 def predict_party_rightness(model, X, y):
@@ -138,23 +154,6 @@ def predict_party_rightness(model, X, y):
     print()
 
 
-def test_k():
-    """ Plot the MSE for selecting the K best features, for various values of K """
-    mses = []
-    ks = [10, 100, 500, 1000, 2500, 5000, 7500, 10000, 50000, 100000]
-    for k in ks:
-        data = get_train_test_data(sys.argv[1], k)
-        model.fit(data.X_train, data.y_train)
-        y_predicted = model.predict(data.X_test)
-
-        mses.append(mean_squared_error(data.y_test, y_predicted))
-
-    plt.plot(ks, mses, marker='o')
-    plt.xlabel('K best features')
-    plt.ylabel('Mean Squared Error')
-    plt.show()
-
-
 def test_newspapers(model):
     paper_table = []
     for newspaper in newspapers:
@@ -166,42 +165,21 @@ def test_newspapers(model):
     print()
 
 
-def interactive(model):
-    while True:
-        print('=> ', end='')
-        sys.stdout.flush()
-        text = sys.stdin.read()
-
-        if text == '':
-            break
-
-        y = model.predict([text])
-        print(f'Output: {y}')
-
-
 def main():
-    if len(sys.argv) > 2 and sys.argv[2] == '--testk':
-        test_k()
-    else:
-        k = 50000
+    k = 50000
 
-    if len(sys.argv) > 2 and sys.argv[2] == '--interactive':
-        model = create_model(k)
-        data = get_train_test_data(sys.argv[1], 0.01)
-        model.fit(data.X_train, data.y_train)
-        return interactive(model)
-
-    data = get_train_test_data(sys.argv[1], 0.20)
     model_path = 'model.pkl'
 
     if os.path.exists(model_path):
         print('Loading model from disk')
-        model = joblib.load(model_path)
+        model, data = joblib.load(model_path)
     else:
+        data = get_train_test_data(sys.argv[1], 0.20)
         model = create_model(k)
+
         print(f'Training model on data {len(data.X_train)} samples')
         model.fit(data.X_train, data.y_train)
-        joblib.dump(model, model_path)
+        joblib.dump((model, data), model_path)
 
     print(f'Testing model on {len(data.y_test)} samples')
     y_predicted = model.predict(data.X_test)
