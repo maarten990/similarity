@@ -1,19 +1,24 @@
-import sys
-import corpus
+import os.path
 import readline
-
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.feature_selection import SelectKBest, f_regression
-from sklearn.svm import LinearSVR
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import explained_variance_score, r2_score, mean_squared_error
-
-from tabulate import tabulate
+import sys
 from collections import namedtuple
+
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy
-import matplotlib.pyplot as plt
+
+from sklearn.externals import joblib
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.metrics import (explained_variance_score, mean_squared_error,
+                             r2_score)
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPRegressor
+from sklearn.pipeline import make_pipeline
+from sklearn.svm import LinearSVR
+
+import corpus
+from tabulate import tabulate
 
 plt.style.use('ggplot')
 
@@ -76,7 +81,8 @@ def create_model(k):
     # The linear support vector regression seems to offer both the best
     # performance and quickest training, but can probably be improved upon with
     # some more experimentation.
-    model = LinearSVR()
+    #model = LinearSVR()
+    model = MLPRegressor(hidden_layer_sizes=(1000, 250), verbose=True)
 
     return make_pipeline(vectorizer, kbest, model)
 
@@ -185,11 +191,17 @@ def main():
         model.fit(data.X_train, data.y_train)
         return interactive(model)
 
-    model = create_model(k)
     data = get_train_test_data(sys.argv[1], 0.20)
+    model_path = 'model.pkl'
 
-    print(f'Training model on data {len(data.X_train)} samples')
-    model.fit(data.X_train, data.y_train)
+    if os.path.exists(model_path):
+        print('Loading model from disk')
+        model = joblib.load(model_path)
+    else:
+        model = create_model(k)
+        print(f'Training model on data {len(data.X_train)} samples')
+        model.fit(data.X_train, data.y_train)
+        joblib.dump(model, model_path)
 
     print(f'Testing model on {len(data.y_test)} samples')
     y_predicted = model.predict(data.X_test)
