@@ -115,7 +115,7 @@ def create_model(k, use_keras):
     unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
 
     if use_keras:
-        model = KerasRegressor(create_neuralnet, k=k, epochs=2, batch_size=32)
+        model = KerasRegressor(create_neuralnet, k=k, epochs=3, batch_size=32)
     else:
         model = MLPRegressor(hidden_layer_sizes=(500,), verbose=True)
 
@@ -126,7 +126,7 @@ def save_pipeline(model, data, path):
     if 'kerasregressor' in model.named_steps:
         nnet = model.named_steps['kerasregressor']
         nnet.model.save('nnet.h5')
-        model.named_steps['kerasregressor'] = None
+        model.named_steps['kerasregressor'].model = None
 
     joblib.dump((model, data), path)
 
@@ -135,7 +135,7 @@ def load_pipeline(path, keras=False):
     model, data = joblib.load(path)
 
     if keras:
-        model.named_steps['kerasregressor'] = load_model('nnet.h5')
+        model.named_steps['kerasregressor'].model = load_model('nnet.h5')
 
     return model, data
 
@@ -206,11 +206,10 @@ def main():
     else:
         data = get_train_test_data(sys.argv[1], 0.20)
         model = create_model(k, use_keras)
-        save_pipeline(model, data, model_path)
 
         print(f'Training model on data {len(data.X_train)} samples')
         model.fit(data.X_train, data.y_train)
-        joblib.dump((model, data), model_path)
+        save_pipeline(model, data, model_path)
 
     print(f'Testing model on {len(data.y_test)} samples')
     y_predicted = model.predict(data.X_test)

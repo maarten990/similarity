@@ -59,7 +59,10 @@ def get_newspaper(foldername):
 
     for file in glob(os.path.join(foldername, '*.HTML')):
         with open(file, 'r', encoding='UTF-8') as f:
-            tree = html.fromstring(f.read().encode('UTF-8'))
+            try:
+                tree = html.fromstring(f.read().encode('UTF-8'))
+            except:
+                continue
 
         titles = tree.xpath('//span[@class="c7"]')
 
