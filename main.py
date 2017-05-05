@@ -4,9 +4,10 @@ import sys
 from collections import namedtuple
 
 import numpy as np
-import seaborn as sns
+from keras.layers import Dense, Dropout
+from keras.models import Sequential, load_model
+from keras.wrappers.scikit_learn import KerasRegressor
 from scipy import sparse
-
 from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_selection import SelectKBest, f_regression
@@ -17,13 +18,9 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
-from keras.models import Sequential, load_model
-from keras.layers import Dense, Activation, Dropout
-from keras.wrappers.scikit_learn import KerasRegressor
-
 import corpus
+import seaborn as sns
 from tabulate import tabulate
-
 
 # alternatieve waarden voor links/rechtsheid genomen uit
 # http://www.nyu.edu/gsas/dept/politics/faculty/laver/PPMD_draft.pdf
