@@ -38,7 +38,7 @@ parties = [('CDU/CSU', 5.92),
            ('SPD', 3.77),
            ('BÜNDNIS 90/DIE GRÜNEN', 3.61)]
 
-newspapers = ['diewelt', 'taz']
+newspapers = ['diewelt', 'taz', 'spiegel']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
@@ -148,31 +148,29 @@ def get_rightness(model, X):
     return np.mean(predictions)
 
 
-def plot_party_predictions(model, X, y):
-    for party, label in parties:
-        predictions = model.predict(X[y == label])
-        ax = sns.distplot(predictions, label=party, axlabel='Political rightness')
+def plot_predictions(names, predictions, filename):
+    for label, y in zip(names, predictions):
+        ax = sns.distplot(y, label=label, axlabel='Political rightness')
 
     ax.legend()
     fig = ax.get_figure()
-    fig.savefig('kde.png')
+    fig.savefig(filename)
 
 
-def predict_party_rightness(model, X, y):
+def test_parties(model, X, y):
     """ Calculate the average score per party """
 
-    rightnesses = [get_rightness(model, X[y == label])
+    predictions = [model.predict(X[y == label])
                    for _, label in parties]
 
-    # get the data in a nice table for pretty printing
-    rows = [[parties[i][0], rightnesses[i], parties[i][1]]
+    rows = [[parties[i][0], np.mean(predictions[i], axis=0), parties[i][1]]
             for i in range(len(parties))]
     print(tabulate(rows, headers=['Average rightness', 'Expected rightness']))
 
     # sort the parties from left to right based on both the known scores and the
     # predicted scores
-    left_to_right = sorted([(rightness, name) for rightness, (name, _)
-                            in zip(rightnesses, parties)])
+    left_to_right = sorted([(np.mean(prediction, axis=0), name) for prediction, (name, _)
+                            in zip(predictions, parties)])
     expected = sorted([(rightness, name) for name, rightness
                        in parties])
 
@@ -181,16 +179,22 @@ def predict_party_rightness(model, X, y):
     print(f'Expected order: \t\t{", ".join([a[1] for a in expected])}')
     print()
 
+    plot_predictions([name for name, _ in parties], predictions, 'parties.png')
+
 
 def test_newspapers(model):
     paper_table = []
-    for newspaper in newspapers:
-        X = corpus.get_newspaper(newspaper)
-        rightness = get_rightness(model, X)
-        paper_table.append([newspaper, rightness])
+    predictions = [model.predict(corpus.get_newspaper(name))
+                   for name in newspapers]
 
+    # print the average predictions
+    paper_table = [[name, np.mean(X, axis=0)]
+                   for name, X in zip(newspapers, predictions)]
     print(tabulate(paper_table))
     print()
+
+    # plot the histogram
+    plot_predictions(newspapers, predictions, 'sources.png')
 
 
 def get_args():
@@ -239,8 +243,7 @@ def main():
     print(f'r2 score on testset: \t\t{r2:.2f}')
     print()
 
-    predict_party_rightness(model, data.X_test, data.y_test)
-    plot_party_predictions(model, data.X_test, data.y_test)
+    test_parties(model, data.X_test, data.y_test)
     test_newspapers(model)
 
 
