@@ -1,3 +1,4 @@
+import argparse
 import os.path
 import sys
 from collections import namedtuple
@@ -14,7 +15,7 @@ from sklearn.metrics import (explained_variance_score, mean_squared_error,
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from keras.models import Sequential, load_model
 from keras.layers import Dense, Activation, Dropout
@@ -89,46 +90,47 @@ def ensure_dense(X, *args, **kwargs):
 def create_neuralnet(k):
     """ Create a simple feedforward Keras neural net with k inputs """
     model = Sequential([
-        Dense(512, input_dim=k),
+        Dense(500, input_dim=k, activation='relu'),
         Dropout(0.2),
-        Dense(48),
+        Dense(50, activation='relu'),
         Dropout(0.2),
-        Dense(1),
-        Activation('relu'),
+        Dense(1, activation='relu')
     ])
 
     model.compile(optimizer='rmsprop', loss='mse')
     return model
 
 
-def create_model(k, use_keras):
+def create_model(k, epochs, use_keras):
     """
     Return an sklearn pipeline.
     k: the number of features to select
     """
 
-    # preprocessing steps: TFIDF vectorizer, dimensionality reduction, and
+    # preprocessing steps: TFIDF vectorizer, dimensionality reduction,
     # conversion from sparse to dense matrices because Keras doesn't support
-    # sparse
+    # sparse, and input scaling
     vectorizer = TfidfVectorizer()
     kbest = SelectKBest(uncentered_f_regression, k=k)
     unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
+    scaler = StandardScaler()
 
     if use_keras:
-        model = KerasRegressor(create_neuralnet, k=k, epochs=3, batch_size=32)
+        model = KerasRegressor(create_neuralnet, k=k, epochs=epochs, batch_size=32)
     else:
         model = MLPRegressor(hidden_layer_sizes=(500,), verbose=True)
 
-    return make_pipeline(vectorizer, kbest, unsparse, model)
+    return make_pipeline(vectorizer, kbest, unsparse, scaler, model)
 
 
 def save_pipeline(model, data, path):
     if 'kerasregressor' in model.named_steps:
-        nnet = model.named_steps['kerasregressor']
-        nnet.model.save('nnet.h5')
+        nnet = model.named_steps['kerasregressor'].model
+        nnet.save('nnet.h5')
         model.named_steps['kerasregressor'].model = None
 
     joblib.dump((model, data), path)
+    model.named_steps['kerasregressor'].model = nnet
 
 
 def load_pipeline(path, keras=False):
@@ -194,18 +196,34 @@ def test_newspapers(model):
     print()
 
 
-def main():
-    k = 50000
-    use_keras = True
+def get_args():
+    parser = argparse.ArgumentParser(description='Predict political left-rightness')
+    parser.add_argument('folder', help='folder containing the training data')
+    parser.add_argument('-k', type=int, default=50000,
+                        help='number of best features to select')
 
-    model_path = 'model.pkl'
+    parser.add_argument('-e', '--epochs', type=int, default=5,
+                        help='number of epochs to train for')
+
+    parser.add_argument('--neural_net', '-n', choices=['sklearn', 'keras'],
+                        default='sklearn', help='The neural net implementation to use')
+
+    return parser.parse_args()
+
+
+def main():
+    args = get_args()
+    k = args.k
+    use_keras = True if args.neural_net == 'keras' else False
+
+    model_path = f'model_{args.neural_net}.pkl'
 
     if os.path.exists(model_path):
         print('Loading model from disk')
         model, data = load_pipeline(model_path, use_keras)
     else:
         data = get_train_test_data(sys.argv[1], 0.20)
-        model = create_model(k, use_keras)
+        model = create_model(k, args.epochs, use_keras)
 
         print(f'Training model on data {len(data.X_train)} samples')
         model.fit(data.X_train, data.y_train)
