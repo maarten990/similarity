@@ -3,6 +3,7 @@ import os.path
 import sys
 from collections import namedtuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 from keras.layers import Dense, Dropout
 from keras.models import Sequential, load_model
@@ -149,6 +150,8 @@ def get_rightness(model, X):
 
 
 def plot_predictions(names, predictions, filename):
+    plt.figure()
+
     for label, y in zip(names, predictions):
         ax = sns.distplot(y, label=label, axlabel='Political rightness')
 
