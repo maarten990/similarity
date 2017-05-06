@@ -85,13 +85,13 @@ def ensure_dense(X, *args, **kwargs):
         return X
 
 
-def create_neuralnet(k):
+def create_neuralnet(k, dropout):
     """ Create a simple feedforward Keras neural net with k inputs """
     model = Sequential([
         Dense(500, input_dim=k, activation='relu'),
-        Dropout(0.2),
+        Dropout(dropout),
         Dense(50, activation='relu'),
-        Dropout(0.2),
+        Dropout(dropout),
         Dense(1, activation='relu')
     ])
 
@@ -99,7 +99,7 @@ def create_neuralnet(k):
     return model
 
 
-def create_model(k, epochs, use_keras):
+def create_model(k, epochs, dropout, use_keras):
     """
     Return an sklearn pipeline.
     k: the number of features to select
@@ -114,7 +114,8 @@ def create_model(k, epochs, use_keras):
     scaler = StandardScaler()
 
     if use_keras:
-        model = KerasRegressor(create_neuralnet, k=k, epochs=epochs, batch_size=32)
+        model = KerasRegressor(create_neuralnet, k=k, dropout=dropout,
+                               epochs=epochs, batch_size=32)
     else:
         model = MLPRegressor(hidden_layer_sizes=(500,), verbose=True)
 
@@ -212,6 +213,12 @@ def get_args():
     parser.add_argument('--neural_net', '-n', choices=['sklearn', 'keras'],
                         default='sklearn', help='The neural net implementation to use')
 
+    parser.add_argument('--dropout', type=float, default=0.2,
+                        help='the dropout ratio (between 0 and 1)')
+
+    parser.add_argument('--load_from_disk', '-l', action='store_true',
+                        help='load a previously trained model from disk')
+
     return parser.parse_args()
 
 
@@ -222,12 +229,12 @@ def main():
 
     model_path = f'model_{args.neural_net}.pkl'
 
-    if os.path.exists(model_path):
+    if os.path.exists(model_path) and args.load_from_disk:
         print('Loading model from disk')
         model, data = load_pipeline(model_path, use_keras)
     else:
         data = get_train_test_data(sys.argv[1], 0.20)
-        model = create_model(k, args.epochs, use_keras)
+        model = create_model(k, args.epochs, args.dropout, use_keras)
 
         print(f'Training model on data {len(data.X_train)} samples')
         model.fit(data.X_train, data.y_train)
