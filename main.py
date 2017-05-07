@@ -7,21 +7,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 from keras.layers import Dense, Dropout
 from keras.models import Sequential, load_model
-from keras.wrappers.scikit_learn import KerasRegressor
+from keras.utils.np_utils import to_categorical
+from keras.wrappers.scikit_learn import KerasClassifier
 from scipy import sparse
 from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.feature_selection import SelectKBest, f_regression
-from sklearn.metrics import (explained_variance_score, mean_squared_error,
-                             r2_score)
+from sklearn.feature_selection import SelectKBest, chi2
+from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
-from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
+from sklearn.svm import LinearSVC
 
 import corpus
 import seaborn as sns
-from tabulate import tabulate
 
 # alternatieve waarden voor links/rechtsheid genomen uit
 # http://www.nyu.edu/gsas/dept/politics/faculty/laver/PPMD_draft.pdf
@@ -34,10 +33,7 @@ from tabulate import tabulate
 # 0 = extreme left
 # 10 = extreme right
 # source: Chapel Hill Expert Survey (www.chesdata.eu)
-parties = [('CDU/CSU', 5.92),
-           ('DIE LINKE', 1.23),
-           ('SPD', 3.77),
-           ('BÜNDNIS 90/DIE GRÜNEN', 3.61)]
+parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
 
 newspapers = ['diewelt', 'taz', 'spiegel']
 
@@ -53,9 +49,9 @@ def get_train_test_data(folder, test_size):
     """
     all_speeches = []
     all_labels = []
-    for i, (party, score) in enumerate(parties):
+    for i, party in enumerate(parties):
         speeches = corpus.get_by_party(folder, party)
-        labels = [score for _ in speeches]
+        labels = [i for _ in speeches]
 
         all_speeches += speeches
         all_labels += labels
@@ -66,14 +62,6 @@ def get_train_test_data(folder, test_size):
     data = Data(*train_test_split(X, y, test_size=test_size))
 
     return data
-
-
-def uncentered_f_regression(a, b):
-    """
-    Needed because lambdas can't be pickled and sparse matrices can't be
-    centered.
-    """
-    return f_regression(a, b, center=False)
 
 
 def ensure_dense(X, *args, **kwargs):
@@ -92,10 +80,11 @@ def create_neuralnet(k, dropout):
         Dropout(dropout),
         Dense(50, activation='relu'),
         Dropout(dropout),
-        Dense(1, activation='relu')
+        Dense(len(parties), activation='softmax')
     ])
 
-    model.compile(optimizer='rmsprop', loss='mse')
+    model.compile(optimizer='rmsprop', loss='categorical_crossentropy',
+                  metrics=['accuracy'])
     return model
 
 
@@ -109,96 +98,47 @@ def create_model(k, epochs, dropout, use_keras):
     # conversion from sparse to dense matrices because Keras doesn't support
     # sparse, and input scaling
     vectorizer = TfidfVectorizer()
-    kbest = SelectKBest(uncentered_f_regression, k=k)
+    kbest = SelectKBest(chi2, k=k)
     unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
     scaler = StandardScaler()
 
     if use_keras:
-        model = KerasRegressor(create_neuralnet, k=k, dropout=dropout,
-                               epochs=epochs, batch_size=32)
+        model = KerasClassifier(create_neuralnet, k=k, dropout=dropout,
+                                epochs=epochs, batch_size=32)
     else:
-        model = MLPRegressor(hidden_layer_sizes=(500,), verbose=True)
+        model = LinearSVC()
 
     return make_pipeline(vectorizer, kbest, unsparse, scaler, model)
 
 
 def save_pipeline(model, data, path):
-    if 'kerasregressor' in model.named_steps:
-        nnet = model.named_steps['kerasregressor'].model
+    if 'kerasclassifier' in model.named_steps:
+        nnet = model.named_steps['kerasclassifier'].model
         nnet.save('nnet.h5')
-        model.named_steps['kerasregressor'].model = None
+        model.named_steps['kerasclassifier'].model = None
+        joblib.dump((model, data), path)
+        model.named_steps['kerasclassifier'].model = nnet
 
-    joblib.dump((model, data), path)
-    model.named_steps['kerasregressor'].model = nnet
+    else:
+        joblib.dump((model, data), path)
 
 
 def load_pipeline(path, keras=False):
     model, data = joblib.load(path)
 
     if keras:
-        model.named_steps['kerasregressor'].model = load_model('nnet.h5')
+        model.named_steps['kerasclassifier'].model = load_model('nnet.h5')
 
     return model, data
 
 
-def get_rightness(model, X):
-    """
-    Return the mean of the predictions, giving a measure of how rightwing the
-    given texts are.
-    """
-    predictions = model.predict(X)
-    return np.mean(predictions)
-
-
-def plot_predictions(names, predictions, filename):
-    plt.figure()
-
-    for label, y in zip(names, predictions):
-        ax = sns.distplot(y, label=label, axlabel='Political rightness')
-
-    ax.legend()
-    fig = ax.get_figure()
-    fig.savefig(filename)
-
-
-def test_parties(model, X, y):
-    """ Calculate the average score per party """
-
-    predictions = [model.predict(X[y == label])
-                   for _, label in parties]
-
-    rows = [[parties[i][0], np.mean(predictions[i], axis=0), parties[i][1]]
-            for i in range(len(parties))]
-    print(tabulate(rows, headers=['Average rightness', 'Expected rightness']))
-
-    # sort the parties from left to right based on both the known scores and the
-    # predicted scores
-    left_to_right = sorted([(np.mean(prediction, axis=0), name) for prediction, (name, _)
-                            in zip(predictions, parties)])
-    expected = sorted([(rightness, name) for name, rightness
-                       in parties])
-
-    print()
-    print(f'Sorted from left to right: \t{", ".join([a[1] for a in left_to_right])}')
-    print(f'Expected order: \t\t{", ".join([a[1] for a in expected])}')
-    print()
-
-    plot_predictions([name for name, _ in parties], predictions, 'parties.png')
-
-
 def test_newspapers(model):
-    paper_table = []
-    predictions = [model.predict(corpus.get_newspaper(name))
-                   for name in newspapers]
-
-    # print the average predictions
-    paper_table = [[name, np.mean(X, axis=0)]
-                   for name, X in zip(newspapers, predictions)]
-    print(tabulate(paper_table))
-    print()
-
-    # plot the histogram
-    plot_predictions(newspapers, predictions, 'sources.png')
+    for paper in newspapers:
+        plt.figure()
+        X = corpus.get_newspaper(paper)
+        y = model.predict(X)
+        sns.barplot(parties, y)
+        plt.savefig(f'classification_{paper}.png')
 
 
 def get_args():
@@ -227,6 +167,11 @@ def main():
     k = args.k
     use_keras = True if args.neural_net == 'keras' else False
 
+    if use_keras:
+        data_transform = to_categorical
+    else:
+        data_transform = lambda x: x
+
     model_path = f'model_{args.neural_net}.pkl'
 
     if os.path.exists(model_path) and args.load_from_disk:
@@ -237,23 +182,18 @@ def main():
         model = create_model(k, args.epochs, args.dropout, use_keras)
 
         print(f'Training model on data {len(data.X_train)} samples')
-        model.fit(data.X_train, data.y_train)
+        model.fit(data.X_train, data_transform(data.y_train))
         save_pipeline(model, data, model_path)
 
     print(f'Testing model on {len(data.y_test)} samples')
     y_predicted = model.predict(data.X_test)
 
-    mse = mean_squared_error(data.y_test, y_predicted)
-    var = explained_variance_score(data.y_test, y_predicted)
-    r2 = r2_score(data.y_test, y_predicted)
+    acc = accuracy_score(data.y_test, y_predicted)
 
     print()
-    print(f'mean squared error on testset: \t{mse:.2f}')
-    print(f'explained variance on testset: \t{var:.2f}')
-    print(f'r2 score on testset: \t\t{r2:.2f}')
+    print(f'accuracy on testset: \t{acc:.2f}')
     print()
 
-    test_parties(model, data.X_test, data.y_test)
     test_newspapers(model)
 
 
