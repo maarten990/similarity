@@ -137,7 +137,7 @@ def test_newspapers(model):
         plt.figure()
         X = corpus.get_newspaper(paper)
         y = model.predict(X)
-        sns.barplot(parties, y)
+        sns.countplot([parties[i] for i in y], order=parties)
         plt.savefig(f'classification_{paper}.png')
 
 
