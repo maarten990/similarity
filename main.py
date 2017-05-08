@@ -39,7 +39,7 @@ parties = [('CDU/CSU', 5.92),
            ('SPD', 3.77),
            ('BÜNDNIS 90/DIE GRÜNEN', 3.61)]
 
-newspapers = ['diewelt', 'taz', 'spiegel']
+newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
