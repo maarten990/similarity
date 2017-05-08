@@ -35,7 +35,7 @@ import seaborn as sns
 # source: Chapel Hill Expert Survey (www.chesdata.eu)
 parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
 
-newspapers = ['diewelt', 'taz', 'spiegel']
+newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
