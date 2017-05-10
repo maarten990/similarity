@@ -79,6 +79,6 @@ def get_newspaper(foldername):
 
     # pickle the articles
     with open(pickle_path, 'wb') as f:
-        return pickle.dump(articles, f)
+        pickle.dump(articles, f)
 
     return articles
