@@ -21,6 +21,7 @@ from sklearn.svm import LinearSVC
 
 import corpus
 import seaborn as sns
+from tabulate import tabulate
 
 # alternatieve waarden voor links/rechtsheid genomen uit
 # http://www.nyu.edu/gsas/dept/politics/faculty/laver/PPMD_draft.pdf
@@ -35,7 +36,7 @@ import seaborn as sns
 # source: Chapel Hill Expert Survey (www.chesdata.eu)
 parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
 
-newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost']
+newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost', 'diezeit']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
@@ -133,12 +134,34 @@ def load_pipeline(path, keras=False):
 
 
 def test_newspapers(model):
+    counts = []
+
     for paper in newspapers:
         plt.figure()
         X = corpus.get_newspaper(paper)
         y = model.predict(X)
-        sns.countplot([parties[i] for i in y], order=parties)
-        plt.savefig(f'classification_{paper}.png')
+
+        # get a normalized histogram
+        h, _ = np.histogram(y, bins=list(range(len(parties) + 1)), density=True)
+        counts.append(h)
+
+    counts = np.array(counts, dtype='float64')
+    means = np.mean(counts, axis=0)
+
+    # print the deviations in table form
+    rows = []
+    for i in range(np.shape(counts)[0]):
+        row = counts[i, :]
+        row = ((row - means) / means) * 100
+
+        rows.append([newspapers[i]] + row.tolist())
+
+        sns.barplot(parties, row)
+        plt.savefig(f'classification_{newspapers[i]}.png')
+
+    print()
+    print('Percentage increase over mean per party')
+    print(tabulate(rows, headers=parties, floatfmt=".1f"))
 
 
 def get_args():
