@@ -17,12 +17,12 @@ def load_from_disk(folder):
             yield xml
 
 
-def get_by_party(folder, party):
+def get_by_party(folder, party, max_words=None):
     """
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'{party}.pkl'.replace('/', ' ')
+    pickle_name = f'{party}_{max_words}.pkl'.replace('/', ' ')
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -34,8 +34,15 @@ def get_by_party(folder, party):
                              namespaces=XMLNS)
 
         for speech in speeches:
-            text = '\n'.join(speech.xpath('pm:p/text()', namespaces=XMLNS))
-            corpus.append(text)
+            txt = ''
+            for p in speech.xpath('pm:p', namespaces=XMLNS):
+                text = '\n'.join(p.xpath('.//text()', namespaces=XMLNS))
+                txt += text
+
+                if max_words and len(txt.split()) > max_words:
+                    break
+
+            corpus.append(txt)
 
     with open(pickle_name, 'wb') as f:
         pickle.dump(corpus, f)
