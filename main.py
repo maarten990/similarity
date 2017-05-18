@@ -1,14 +1,18 @@
 import argparse
 import os.path
+import pickle
+import re
 import sys
+import threading
+import zlib
 from collections import namedtuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.stats
 from keras.layers import Activation, Dense, Dropout, Flatten
 from keras.layers import Conv1D, Embedding, MaxPool1D
 from keras.layers.recurrent import LSTM
-from keras.layers.wrappers import Bidirectional
 from keras.models import Sequential, load_model
 from keras.preprocessing.sequence import pad_sequences
 from keras.preprocessing.text import Tokenizer
@@ -17,16 +21,16 @@ from keras.wrappers.scikit_learn import KerasClassifier
 from scipy import sparse
 from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.feature_selection import SelectKBest, chi2
+from sklearn.feature_selection import SelectKBest, chi2, f_classif
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
-from sklearn.svm import LinearSVC
 
 import corpus
 import seaborn as sns
 from tabulate import tabulate
+import treetaggerwrapper
 
 # alternatieve waarden voor links/rechtsheid genomen uit
 # http://www.nyu.edu/gsas/dept/politics/faculty/laver/PPMD_draft.pdf
@@ -63,6 +67,80 @@ class TokenizingTransformer(object):
         return pad_sequences(tokens, maxlen=self.max_words)
 
 
+class POSTaggerTransformer(object):
+    def __init__(self, lemmatize=True, tagfilter=[]):
+        self.tagger = treetaggerwrapper.TreeTagger(TAGLANG='de',
+                                                   TAGDIR='treetagger/tree-tagger-MacOSX-3.2')
+        self.lemmatize = lemmatize
+        self.filter = tagfilter
+        self.first_transform = True
+
+    def fit(self, X=None, y=None):
+        return self
+
+    def transform(self, X):
+        checksum = zlib.adler32(bytes(str(tuple(X)), 'UTF-8'))
+        pickle_name = f'tagged_{"".join(self.filter)}_{checksum}.pkl'
+
+        # check if the initial corpus has been saved
+        if os.path.exists(pickle_name):
+            with open(pickle_name, 'rb') as f:
+                return pickle.load(f)
+
+        out = []
+        for i, speech in enumerate(X):
+            if i % 1000 == 0:
+                print(f'{i}/{len(X)}')
+
+            speech = re.sub(r'\.([^ ])', r'. \1', speech)
+            tags = treetaggerwrapper.make_tags(self.tagger.tag_text(speech))
+            words = []
+            for tag in tags:
+                if isinstance(tag, treetaggerwrapper.NotTag):
+                    print(tag)
+                    continue
+
+                if tag.pos not in self.filter:
+                    words.append(tag.lemma if self.lemmatize else tag.word)
+
+            out.append(' '.join(words))
+
+        with open(pickle_name, 'wb') as f:
+            pickle.dump(out, f)
+
+        return out
+
+
+class ContainsAllBut(object):
+    def __init__(self, item):
+        self.item = item
+
+    def __contains__(self, item):
+        return item != self.item
+
+    def __iter__(self):
+        self.done = False
+        return self
+
+    def __next__(self):
+        if self.done:
+            raise StopIteration
+
+        self.done = True
+        return 'Everything!'
+
+
+def print_best_words(pipeline):
+    print('k best features:')
+    print('---')
+
+    feature_names = pipeline.named_steps['tfidfvectorizer'].get_feature_names()
+    for feature in pipeline.named_steps['selectkbest'].get_support(indices=True):
+        print(feature_names[feature])
+
+    print('---')
+
+
 def get_train_test_data(folder, test_size, max_words=None):
     """
     Return the raw input data and labels, split into training and test data.
@@ -81,7 +159,7 @@ def get_train_test_data(folder, test_size, max_words=None):
     X = np.array(all_speeches)
     y = np.array(all_labels)
 
-    data = Data(*train_test_split(X, y, test_size=test_size))
+    data = Data(*train_test_split(X, y, test_size=test_size, random_state=12))
 
     return data
 
@@ -150,7 +228,7 @@ def create_deep_model(func, timesteps, n, epochs, dropout):
     return make_pipeline(embedder, model)
 
 
-def create_model(k, epochs, dropout):
+def create_model(k, epochs, dropout, only_nn):
     """
     Return an sklearn pipeline.
     k: the number of features to select
@@ -159,6 +237,7 @@ def create_model(k, epochs, dropout):
     # preprocessing steps: TFIDF vectorizer, dimensionality reduction,
     # conversion from sparse to dense matrices because Keras doesn't support
     # sparse, and input scaling
+    tagger = POSTaggerTransformer(tagfilter=ContainsAllBut('NN') if only_nn else [])
     vectorizer = TfidfVectorizer()
     kbest = SelectKBest(chi2, k=k)
     unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
@@ -167,24 +246,29 @@ def create_model(k, epochs, dropout):
     model = KerasClassifier(create_neuralnet, k=k, dropout=dropout,
                             epochs=epochs, batch_size=32)
 
-    return make_pipeline(vectorizer, kbest, unsparse, scaler, model)
+    return make_pipeline(tagger, vectorizer, kbest, unsparse, scaler, model)
 
 
 def save_pipeline(model, data, path, name):
-    if 'kerasclassifier' in model.named_steps:
-        nnet = model.named_steps['kerasclassifier'].model
-        nnet.save(f'{name}.h5')
-        model.named_steps['kerasclassifier'].model = None
-        joblib.dump((model, data), path)
-        model.named_steps['kerasclassifier'].model = nnet
+    if 'postaggertransformer' in model.named_steps:
+        model.named_steps['postaggertransformer'].tagger.taggerlock = None
 
-    else:
-        joblib.dump((model, data), path)
+    nnet = model.named_steps['kerasclassifier'].model
+    nnet.save(f'{name}.h5')
+    model.named_steps['kerasclassifier'].model = None
+    joblib.dump((model, data), path)
+    model.named_steps['kerasclassifier'].model = nnet
+
+    if 'postaggertransformer' in model.named_steps:
+        model.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
 
 
 def load_pipeline(path, name):
     model, data = joblib.load(path)
     model.named_steps['kerasclassifier'].model = load_model(f'{name}.h5')
+
+    if 'postaggertransformer' in model.named_steps:
+        model.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
 
     return model, data
 
@@ -208,16 +292,16 @@ def test_newspapers(model):
     rows = []
     for i in range(np.shape(counts)[0]):
         row = counts[i, :]
-        sns.barplot(parties, row)
-        plt.savefig(f'classification_{newspapers[i]}.png')
+
+        # do a significance test
+        _, p = scipy.stats.chisquare(row * 100, means * 100)
 
         row = ((row - means) / means) * 100
-
-        rows.append([newspapers[i]] + row.tolist() + [newspaper_leanings[i]])
+        rows.append([newspapers[i]] + row.tolist() + [newspaper_leanings[i], p])
 
     print()
     print('Percentage increase over mean per party')
-    print(tabulate(rows, headers=parties + ['expected leaning'], floatfmt=".1f"))
+    print(tabulate(rows, headers=parties + ['expected leaning', 'p'], floatfmt=".3f"))
 
 
 def get_args():
@@ -241,6 +325,9 @@ def get_args():
     parser.add_argument('--retrain', action='store_true',
                         help='retrain after loading')
 
+    parser.add_argument('--only_nn', action='store_true',
+                        help='only use nouns')
+
     parser.add_argument('--max_words', '-m', type=int, default=None,
                         help='the maximum number of words to use')
 
@@ -259,7 +346,7 @@ def main():
 
         if args.retrain:
             model.fit(data.X_train, to_categorical(data.y_train))
-            save_pipeline(model, data, model_path, args.neural_net)
+            save_pipeline(model, data, model_path, args.neural_net + args.only_nn)
     else:
         data = get_train_test_data(sys.argv[1], 0.20, args.max_words)
 
@@ -270,10 +357,11 @@ def main():
             model = create_deep_model(create_rnn, args.max_words, 10000,
                                       args.epochs, args.dropout)
         else:
-            model = create_model(k, args.epochs, args.dropout)
+            model = create_model(k, args.epochs, args.dropout, args.only_nn)
 
         print(f'Training model on data {len(data.X_train)} samples')
-        model.fit(data.X_train, to_categorical(data.y_train))
+        model.fit(data.X_train, data.y_train)
+        print_best_words(model)
         save_pipeline(model, data, model_path, args.neural_net)
 
     print(f'Testing model on {len(data.y_test)} samples')
