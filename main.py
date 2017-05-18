@@ -112,9 +112,8 @@ def create_neuralnet(k, dropout):
 
 def create_rnn(timesteps, n, dropout):
     model = Sequential([
-        Embedding(n, 128, input_length=timesteps, mask_zero=True),
-        LSTM(64, return_sequences=True, dropout=0.2, recurrent_dropout=0.2),
-        LSTM(64, return_sequences=False, dropout=0.2, recurrent_dropout=0.2),
+        Embedding(n, 64, input_length=timesteps, mask_zero=True),
+        LSTM(32, return_sequences=False, dropout=0.2, recurrent_dropout=0.2),
         Dense(4),
         Activation('softmax')
     ])
@@ -209,12 +208,12 @@ def test_newspapers(model):
     rows = []
     for i in range(np.shape(counts)[0]):
         row = counts[i, :]
+        sns.barplot(parties, row)
+        plt.savefig(f'classification_{newspapers[i]}.png')
+
         row = ((row - means) / means) * 100
 
         rows.append([newspapers[i]] + row.tolist() + [newspaper_leanings[i]])
-
-        sns.barplot(parties, row)
-        plt.savefig(f'classification_{newspapers[i]}.png')
 
     print()
     print('Percentage increase over mean per party')
