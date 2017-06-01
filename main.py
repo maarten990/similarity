@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import os.path
 import pickle
 import re
@@ -22,32 +23,30 @@ from scipy import sparse
 from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_selection import SelectKBest, chi2, f_classif
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
+from sklearn.svm import SVC
 
 import corpus
-import seaborn as sns
+#import seaborn as sns
 from tabulate import tabulate
 import treetaggerwrapper
 
-# alternatieve waarden voor links/rechtsheid genomen uit
-# http://www.nyu.edu/gsas/dept/politics/faculty/laver/PPMD_draft.pdf
-# parties = [('CDU/CSU', 13.6),
-#           ('DIE LINKE', 3.6),
-#           ('SPD', 8.4),
-#           ('BÜNDNIS 90/DIE GRÜNEN', 7.1)]
+LANG = 'nl'
 
-# The available political parties, with a score indicating their political leaning.
-# 0 = extreme left
-# 10 = extreme right
-# source: Chapel Hill Expert Survey (www.chesdata.eu)
-parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
+if LANG == 'de':
+    parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
+    newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost', 'diezeit']
+    newspaper_leanings = ['CDU/conversative right', 'left', 'SPD/center left',
+                          'CDU/CSU', 'FDP/center left']
 
-newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost', 'diezeit']
-newspaper_leanings = ['CDU/conversative right', 'left', 'SPD/center left',
-                      'CDU/CSU', 'FDP/center left']
+if LANG == 'nl':
+    parties = ['CDA', 'ChristenUnie', 'D66', 'GroenLinks', 'PVV',
+               'PvdA', 'SGP', 'SP', 'VVD']
+    newspapers = ['telegraaf', 'trouw', 'volkskrant']
+    newspaper_leanings = ['eh', 'eh', 'eh']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
@@ -150,7 +149,14 @@ def get_train_test_data(folder, test_size, max_words=None):
     all_speeches = []
     all_labels = []
     for i, party in enumerate(parties):
-        speeches = corpus.get_by_party(folder, party, max_words)
+        if LANG == 'de':
+            speeches = corpus.get_by_party(folder, party, max_words)
+        if LANG == 'nl':
+            speeches = corpus.get_dutch_proceedings('proceedings_NL', party, max_words)
+
+        if len(speeches) > 5000:
+            speeches = speeches[:5000]
+        print(f'{party}: {len(speeches)} speeches')
         labels = [i for _ in speeches]
 
         all_speeches += speeches
@@ -176,9 +182,9 @@ def ensure_dense(X, *args, **kwargs):
 def create_neuralnet(k, dropout):
     """ Create a simple feedforward Keras neural net with k inputs """
     model = Sequential([
-        Dense(500, input_dim=k, activation='relu'),
+        Dense(500, input_dim=k, activation='tanh'),
         Dropout(dropout),
-        Dense(50, activation='relu'),
+        Dense(50, activation='tanh'),
         Dropout(dropout),
         Dense(len(parties), activation='softmax')
     ])
@@ -190,9 +196,11 @@ def create_neuralnet(k, dropout):
 
 def create_rnn(timesteps, n, dropout):
     model = Sequential([
-        Embedding(n, 64, input_length=timesteps, mask_zero=True),
-        LSTM(32, return_sequences=False, dropout=0.2, recurrent_dropout=0.2),
-        Dense(4),
+        Embedding(n, 300, input_length=timesteps, mask_zero=True),
+        LSTM(64, return_sequences=True, dropout=0.2, recurrent_dropout=0.2),
+        LSTM(64, return_sequences=False, dropout=0.2, recurrent_dropout=0.2),
+        Dense(32),
+        Dense(len(parties)),
         Activation('softmax')
     ])
 
@@ -204,17 +212,21 @@ def create_rnn(timesteps, n, dropout):
 
 def create_cnn(timesteps, n, dropout):
     model = Sequential([
-        Embedding(n, 128, input_length=timesteps, mask_zero=False),
+        Embedding(n, 300, input_length=timesteps, mask_zero=False),
+        Conv1D(100, 5, activation='relu'),
+        MaxPool1D(2),
+        Dropout(dropout),
         Conv1D(100, 5, activation='relu'),
         MaxPool1D(2),
         Dropout(dropout),
 
         Flatten(),
-        Dense(4),
+        Dense(32),
+        Dense(len(parties)),
         Activation('softmax')
     ])
 
-    model.compile(optimizer='rmsprop', loss='categorical_crossentropy',
+    model.compile(optimizer='adam', loss='categorical_crossentropy',
                   metrics=['accuracy'])
 
     return model
@@ -228,6 +240,15 @@ def create_deep_model(func, timesteps, n, epochs, dropout):
     return make_pipeline(embedder, model)
 
 
+def create_svm_model(k):
+    vectorizer = TfidfVectorizer()
+    kbest = SelectKBest(chi2, k=k)
+    svc = SVC(verbose=True)
+    scaler = StandardScaler(with_mean=False)
+
+    return make_pipeline(vectorizer, kbest, scaler, svc)
+
+
 def create_model(k, epochs, dropout, only_nn):
     """
     Return an sklearn pipeline.
@@ -237,7 +258,7 @@ def create_model(k, epochs, dropout, only_nn):
     # preprocessing steps: TFIDF vectorizer, dimensionality reduction,
     # conversion from sparse to dense matrices because Keras doesn't support
     # sparse, and input scaling
-    tagger = POSTaggerTransformer(tagfilter=ContainsAllBut('NN') if only_nn else [])
+    # tagger = POSTaggerTransformer(tagfilter=ContainsAllBut('NN') if only_nn else [])
     vectorizer = TfidfVectorizer()
     kbest = SelectKBest(chi2, k=k)
     unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
@@ -246,18 +267,22 @@ def create_model(k, epochs, dropout, only_nn):
     model = KerasClassifier(create_neuralnet, k=k, dropout=dropout,
                             epochs=epochs, batch_size=32)
 
-    return make_pipeline(tagger, vectorizer, kbest, unsparse, scaler, model)
+    return make_pipeline(vectorizer, kbest, unsparse, scaler, model)
 
 
 def save_pipeline(model, data, path, name):
     if 'postaggertransformer' in model.named_steps:
         model.named_steps['postaggertransformer'].tagger.taggerlock = None
 
-    nnet = model.named_steps['kerasclassifier'].model
-    nnet.save(f'{name}.h5')
-    model.named_steps['kerasclassifier'].model = None
+    if 'kerasclassifier' in model.named_steps:
+        nnet = model.named_steps['kerasclassifier'].model
+        nnet.save(f'{name}.h5')
+        model.named_steps['kerasclassifier'].model = None
+
     joblib.dump((model, data), path)
-    model.named_steps['kerasclassifier'].model = nnet
+
+    if 'kerasclassifier' in model.named_steps:
+        model.named_steps['kerasclassifier'].model = nnet
 
     if 'postaggertransformer' in model.named_steps:
         model.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
@@ -265,7 +290,8 @@ def save_pipeline(model, data, path, name):
 
 def load_pipeline(path, name):
     model, data = joblib.load(path)
-    model.named_steps['kerasclassifier'].model = load_model(f'{name}.h5')
+    if 'kerasclassifier' in model.named_steps:
+        model.named_steps['kerasclassifier'].model = load_model(f'{name}.h5')
 
     if 'postaggertransformer' in model.named_steps:
         model.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
@@ -292,6 +318,8 @@ def test_newspapers(model):
     rows = []
     for i in range(np.shape(counts)[0]):
         row = counts[i, :]
+        #sns.barplot(parties, row)
+        #plt.savefig(f'classification_{newspapers[i]}.png')
 
         # do a significance test
         _, p = scipy.stats.chisquare(row * 100, means * 100)
@@ -304,6 +332,32 @@ def test_newspapers(model):
     print(tabulate(rows, headers=parties + ['expected leaning', 'p'], floatfmt=".3f"))
 
 
+def plot_confusion_matrix(model, y_true, y_predicted):
+    cm = confusion_matrix(y_true, y_predicted)
+
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title('Confusion matrix')
+    plt.colorbar()
+    tick_marks = np.arange(len(parties))
+    plt.xticks(tick_marks, parties, rotation=45)
+    plt.yticks(tick_marks, parties)
+
+    # normalize the confusion matrix
+    cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+    # ensure the text is readable
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, '{:.1f}'.format(cm[i, j]),
+                 horizontalalignment="center",
+                 color="white" if cm[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.ylabel('true label')
+    plt.xlabel('predicted label')
+    plt.savefig('confusion_matrix.png')
+
+
 def get_args():
     parser = argparse.ArgumentParser(description='Predict political left-rightness')
     parser.add_argument('folder', help='folder containing the training data')
@@ -313,7 +367,7 @@ def get_args():
     parser.add_argument('-e', '--epochs', type=int, default=5,
                         help='number of epochs to train for')
 
-    parser.add_argument('--neural_net', '-n', choices=['keras', 'cnn', 'rnn'],
+    parser.add_argument('--neural_net', '-n', choices=['keras', 'cnn', 'rnn', 'svm'],
                         default='sklearn', help='The neural net implementation to use')
 
     parser.add_argument('--dropout', type=float, default=0.25,
@@ -356,18 +410,21 @@ def main():
         elif args.neural_net == 'rnn':
             model = create_deep_model(create_rnn, args.max_words, 10000,
                                       args.epochs, args.dropout)
+        elif args.neural_net == 'svm':
+            model = create_svm_model(k)
         else:
             model = create_model(k, args.epochs, args.dropout, args.only_nn)
 
         print(f'Training model on data {len(data.X_train)} samples')
         model.fit(data.X_train, data.y_train)
-        print_best_words(model)
+        # print_best_words(model)
         save_pipeline(model, data, model_path, args.neural_net)
 
     print(f'Testing model on {len(data.y_test)} samples')
     y_predicted = model.predict(data.X_test)
 
     acc = accuracy_score(data.y_test, y_predicted)
+    plot_confusion_matrix(model, data.y_test, y_predicted)
 
     print()
     print(f'accuracy on testset: \t{acc:.2f}')

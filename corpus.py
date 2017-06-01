@@ -1,3 +1,4 @@
+import json
 import os.path
 import pickle
 from lxml import etree, html
@@ -43,6 +44,45 @@ def get_by_party(folder, party, max_words=None):
                     break
 
             corpus.append(txt)
+
+    with open(pickle_name, 'wb') as f:
+        pickle.dump(corpus, f)
+
+    return corpus
+
+
+def get_dutch_proceedings(folder, party, max_words=None):
+    """
+    Collect all the speeches from the given pary from the xml trees.
+    Output is a list of plaintext speeches.
+    """
+    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_{max_words}.pkl'
+
+    if os.path.exists(pickle_name):
+        with open(pickle_name, 'rb') as f:
+            return pickle.load(f)
+
+    corpus = []
+    for file in glob(os.path.join(folder, '*.json')):
+        with open(file, 'r') as f:
+            js = json.load(f)
+
+        for elem in js:
+            try:
+                xml = etree.fromstring(elem['_source']['xml_content'].encode('utf-8'))
+            except:
+                print('Invalid xml')
+                continue
+
+            speeches = xml.xpath('//spreekbeurt')
+
+            for speech in speeches:
+                politiek = speech.xpath('./spreker/politiek')
+                if len(politiek) > 0 and party in politiek[0].xpath('.//text()')[0]:
+                    text = '\n'.join(speech.xpath('./tekst//text()'))
+                    if max_words:
+                        text = ' '.join(text.split()[:max_words])
+                    corpus.append(text)
 
     with open(pickle_name, 'wb') as f:
         pickle.dump(corpus, f)
