@@ -18,12 +18,12 @@ def load_from_disk(folder):
             yield xml
 
 
-def get_by_party(folder, party, max_words=None):
+def get_by_party(folder, party, concat_proceedings=False, max_words=None):
     """
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'{party}_{max_words}.pkl'.replace('/', ' ')
+    pickle_name = f'{party}_{max_words}_{concat_proceedings}.pkl'.replace('/', ' ')
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -31,6 +31,7 @@ def get_by_party(folder, party, max_words=None):
 
     corpus = []
     for xml in load_from_disk(folder):
+        proceeding_texts = []
         speeches = xml.xpath(f'//pm:speech[@pm:party = "{party}"]',
                              namespaces=XMLNS)
 
@@ -43,7 +44,12 @@ def get_by_party(folder, party, max_words=None):
                 if max_words and len(txt.split()) > max_words:
                     break
 
-            corpus.append(txt)
+            proceeding_texts.append(txt)
+
+        if concat_proceedings:
+            corpus.append(' '.join(proceeding_texts))
+        else:
+            corpus.extend(proceeding_texts)
 
     with open(pickle_name, 'wb') as f:
         pickle.dump(corpus, f)
@@ -51,12 +57,12 @@ def get_by_party(folder, party, max_words=None):
     return corpus
 
 
-def get_dutch_proceedings(folder, party, max_words=None):
+def get_dutch_proceedings(folder, party, concat_proceedings=False, max_words=None):
     """
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_{max_words}.pkl'
+    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_{max_words}_{concat_proceedings}.pkl'
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -67,6 +73,7 @@ def get_dutch_proceedings(folder, party, max_words=None):
         with open(file, 'r') as f:
             js = json.load(f)
 
+        proceeding_texts = []
         for elem in js:
             try:
                 xml = etree.fromstring(elem['_source']['xml_content'].encode('utf-8'))
@@ -82,7 +89,13 @@ def get_dutch_proceedings(folder, party, max_words=None):
                     text = '\n'.join(speech.xpath('./tekst//text()'))
                     if max_words:
                         text = ' '.join(text.split()[:max_words])
-                    corpus.append(text)
+
+                    proceeding_texts.append(text)
+
+        if concat_proceedings:
+            corpus.append(' '.join(proceeding_texts))
+        else:
+            corpus.extend(proceeding_texts)
 
     with open(pickle_name, 'wb') as f:
         pickle.dump(corpus, f)
@@ -90,7 +103,7 @@ def get_dutch_proceedings(folder, party, max_words=None):
     return corpus
 
 
-def get_newspaper(foldername):
+def get_newspaper(foldername, concat=False):
     """
     Return the newspaper data for all files in the given folder.
     Output is a list of plaintext speeches.
@@ -100,7 +113,11 @@ def get_newspaper(foldername):
     pickle_path = f'{foldername}.pkl'
     if os.path.exists(pickle_path):
         with open(pickle_path, 'rb') as f:
-            return pickle.load(f)
+            articles = pickle.load(f)
+            if concat:
+                return [' '.join(articles)]
+            else:
+                return articles
 
     articles = []
 
@@ -128,4 +145,7 @@ def get_newspaper(foldername):
     with open(pickle_path, 'wb') as f:
         pickle.dump(articles, f)
 
-    return articles
+    if concat:
+        return [' '.join(articles)]
+    else:
+        return articles

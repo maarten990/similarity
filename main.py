@@ -30,7 +30,7 @@ from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from sklearn.svm import SVC
 
 import corpus
-#import seaborn as sns
+# import seaborn as sns
 from tabulate import tabulate
 import treetaggerwrapper
 
@@ -45,6 +45,7 @@ if LANG == 'de':
 if LANG == 'nl':
     parties = ['CDA', 'ChristenUnie', 'D66', 'GroenLinks', 'PVV',
                'PvdA', 'SGP', 'SP', 'VVD']
+    parties = ['GroenLinks', 'PVV', 'CDA', 'VVD']
     newspapers = ['telegraaf', 'trouw', 'volkskrant']
     newspaper_leanings = ['eh', 'eh', 'eh']
 
@@ -140,7 +141,7 @@ def print_best_words(pipeline):
     print('---')
 
 
-def get_train_test_data(folder, test_size, max_words=None):
+def get_train_test_data(folder, test_size, max_words=None, avg_proc=False):
     """
     Return the raw input data and labels, split into training and test data.
     folder: the folder containing the xml files to learn on
@@ -150,9 +151,10 @@ def get_train_test_data(folder, test_size, max_words=None):
     all_labels = []
     for i, party in enumerate(parties):
         if LANG == 'de':
-            speeches = corpus.get_by_party(folder, party, max_words)
+            speeches = corpus.get_by_party(folder, party, avg_proc, max_words)
         if LANG == 'nl':
-            speeches = corpus.get_dutch_proceedings('proceedings_NL', party, max_words)
+            speeches = corpus.get_dutch_proceedings('proceedings_NL', party,
+                                                    avg_proc, max_words)
 
         if len(speeches) > 5000:
             speeches = speeches[:5000]
@@ -243,7 +245,7 @@ def create_deep_model(func, timesteps, n, epochs, dropout):
 def create_svm_model(k):
     vectorizer = TfidfVectorizer()
     kbest = SelectKBest(chi2, k=k)
-    svc = SVC(verbose=True)
+    svc = SVC()
     scaler = StandardScaler(with_mean=False)
 
     return make_pipeline(vectorizer, kbest, scaler, svc)
@@ -299,13 +301,13 @@ def load_pipeline(path, name):
     return model, data
 
 
-def test_newspapers(model):
+def test_newspapers(model, concat=False):
     counts = []
 
     for paper in newspapers:
         plt.figure()
-        X = corpus.get_newspaper(paper)
-        y = model.predict(X)
+        X = corpus.get_newspaper(paper, concat)
+        y = model.predict_proba(X)
 
         # get a normalized histogram
         h, _ = np.histogram(y, bins=list(range(len(parties) + 1)), density=True)
@@ -318,8 +320,8 @@ def test_newspapers(model):
     rows = []
     for i in range(np.shape(counts)[0]):
         row = counts[i, :]
-        #sns.barplot(parties, row)
-        #plt.savefig(f'classification_{newspapers[i]}.png')
+        # sns.barplot(parties, row)
+        # plt.savefig(f'classification_{newspapers[i]}.png')
 
         # do a significance test
         _, p = scipy.stats.chisquare(row * 100, means * 100)
@@ -385,6 +387,9 @@ def get_args():
     parser.add_argument('--max_words', '-m', type=int, default=None,
                         help='the maximum number of words to use')
 
+    parser.add_argument('--avg_proc', action='store_true',
+                        help='average over proceedings')
+
     return parser.parse_args()
 
 
@@ -402,7 +407,8 @@ def main():
             model.fit(data.X_train, to_categorical(data.y_train))
             save_pipeline(model, data, model_path, args.neural_net + args.only_nn)
     else:
-        data = get_train_test_data(sys.argv[1], 0.20, args.max_words)
+        data = get_train_test_data(sys.argv[1], 0.20, args.max_words,
+                                   args.avg_proc)
 
         if args.neural_net == 'cnn':
             model = create_deep_model(create_cnn, args.max_words, 10000,
@@ -430,7 +436,7 @@ def main():
     print(f'accuracy on testset: \t{acc:.2f}')
     print()
 
-    test_newspapers(model)
+    test_newspapers(model, args.avg_proc)
 
 
 if __name__ == '__main__':
