@@ -30,11 +30,11 @@ from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from sklearn.svm import SVC
 
 import corpus
-# import seaborn as sns
+import seaborn as sns
 from tabulate import tabulate
-import treetaggerwrapper
+# import treetaggerwrapper
 
-LANG = 'nl'
+LANG = 'de'
 
 if LANG == 'de':
     parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
@@ -45,7 +45,6 @@ if LANG == 'de':
 if LANG == 'nl':
     parties = ['CDA', 'ChristenUnie', 'D66', 'GroenLinks', 'PVV',
                'PvdA', 'SGP', 'SP', 'VVD']
-    parties = ['GroenLinks', 'PVV', 'CDA', 'VVD']
     newspapers = ['telegraaf', 'trouw', 'volkskrant']
     newspaper_leanings = ['eh', 'eh', 'eh']
 
@@ -239,16 +238,16 @@ def create_deep_model(func, timesteps, n, epochs, dropout):
     model = KerasClassifier(func, timesteps=timesteps, n=n, dropout=dropout,
                             epochs=epochs, batch_size=32)
 
-    return make_pipeline(embedder, model)
+    return make_pipeline(embedder), model
 
 
 def create_svm_model(k):
     vectorizer = TfidfVectorizer()
     kbest = SelectKBest(chi2, k=k)
-    svc = SVC()
+    svc = SVC(probability=True)
     scaler = StandardScaler(with_mean=False)
 
-    return make_pipeline(vectorizer, kbest, scaler, svc)
+    return make_pipeline(vectorizer, kbest, scaler), svc
 
 
 def create_model(k, epochs, dropout, only_nn):
@@ -269,69 +268,80 @@ def create_model(k, epochs, dropout, only_nn):
     model = KerasClassifier(create_neuralnet, k=k, dropout=dropout,
                             epochs=epochs, batch_size=32)
 
-    return make_pipeline(vectorizer, kbest, unsparse, scaler, model)
+    return make_pipeline(vectorizer, kbest, unsparse, scaler), model
 
 
-def save_pipeline(model, data, path, name):
-    if 'postaggertransformer' in model.named_steps:
-        model.named_steps['postaggertransformer'].tagger.taggerlock = None
+def save_pipeline(pipeline, model, path, name):
+    if 'postaggertransformer' in pipeline.named_steps:
+        pipeline.named_steps['postaggertransformer'].tagger.taggerlock = None
 
-    if 'kerasclassifier' in model.named_steps:
+    if isinstance(model, KerasClassifier):
         nnet = model.named_steps['kerasclassifier'].model
         nnet.save(f'{name}.h5')
-        model.named_steps['kerasclassifier'].model = None
+        model.model = None
 
-    joblib.dump((model, data), path)
+    joblib.dump((pipeline, model), path)
 
-    if 'kerasclassifier' in model.named_steps:
-        model.named_steps['kerasclassifier'].model = nnet
+    if 'postaggertransformer' in pipeline.named_steps:
+        pipeline.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
 
-    if 'postaggertransformer' in model.named_steps:
-        model.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
+    if isinstance(model, KerasClassifier):
+        model.model = nnet
 
 
 def load_pipeline(path, name):
-    model, data = joblib.load(path)
-    if 'kerasclassifier' in model.named_steps:
-        model.named_steps['kerasclassifier'].model = load_model(f'{name}.h5')
+    pipeline, model = joblib.load(path)
+    if isinstance(model, KerasClassifier):
+        model.model = load_model(f'{name}.h5')
 
-    if 'postaggertransformer' in model.named_steps:
-        model.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
+    if 'postaggertransformer' in pipeline.named_steps:
+        pipeline.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
 
-    return model, data
+    return pipeline, model
 
 
-def test_newspapers(model, concat=False):
+def test_newspapers(preprocess, model, concat=False):
     counts = []
 
     for paper in newspapers:
         plt.figure()
         X = corpus.get_newspaper(paper, concat)
-        y = model.predict_proba(X)
+        y = model.predict_proba(preprocess.transform(X))
 
         # get a normalized histogram
-        h, _ = np.histogram(y, bins=list(range(len(parties) + 1)), density=True)
-        counts.append(h)
+        if not concat:
+            h, _ = np.histogram(y, bins=list(range(len(parties) + 1)), density=True)
+            counts.append(h)
+        else:
+            counts.append(y[0])
 
-    counts = np.array(counts, dtype='float64')
-    means = np.mean(counts, axis=0)
+    if not concat:
+        counts = np.array(counts, dtype='float64')
+        means = np.mean(counts, axis=0)
 
-    # print the deviations in table form
-    rows = []
-    for i in range(np.shape(counts)[0]):
-        row = counts[i, :]
-        # sns.barplot(parties, row)
-        # plt.savefig(f'classification_{newspapers[i]}.png')
+        # print the deviations in table form
+        rows = []
+        for i in range(np.shape(counts)[0]):
+            row = counts[i, :]
 
-        # do a significance test
-        _, p = scipy.stats.chisquare(row * 100, means * 100)
+            # do a significance test
+            _, p = scipy.stats.chisquare(row * 100, means * 100)
 
-        row = ((row - means) / means) * 100
-        rows.append([newspapers[i]] + row.tolist() + [newspaper_leanings[i], p])
+            row = ((row - means) / means) * 100
+            rows.append([newspapers[i]] + row.tolist() + [newspaper_leanings[i], p])
 
-    print()
-    print('Percentage increase over mean per party')
-    print(tabulate(rows, headers=parties + ['expected leaning', 'p'], floatfmt=".3f"))
+        print()
+        print('Percentage increase over mean per party')
+        print(tabulate(rows, headers=parties + ['expected leaning', 'p'], floatfmt=".3f"))
+    else:
+        # print the deviations in table form
+        rows = []
+        for i in range(len(counts)):
+            row = counts[i]
+            rows.append([newspapers[i]] + row.tolist() + [newspaper_leanings[i]])
+
+        print()
+        print(tabulate(rows, headers=parties + ['expected leaning'], floatfmt=".2f"))
 
 
 def plot_confusion_matrix(model, y_true, y_predicted):
@@ -398,36 +408,36 @@ def main():
     k = args.k
 
     model_path = f'model_{args.neural_net}.pkl'
+    data = get_train_test_data(sys.argv[1], 0.20, args.max_words,
+                               args.avg_proc)
 
     if os.path.exists(model_path) and args.load_from_disk:
         print('Loading model from disk')
-        model, data = load_pipeline(model_path, args.neural_net)
+        preprocess, model = load_pipeline(model_path, args.neural_net)
 
         if args.retrain:
             model.fit(data.X_train, to_categorical(data.y_train))
-            save_pipeline(model, data, model_path, args.neural_net + args.only_nn)
+            save_pipeline(preprocess, model, model_path, args.neural_net + args.only_nn)
     else:
-        data = get_train_test_data(sys.argv[1], 0.20, args.max_words,
-                                   args.avg_proc)
-
         if args.neural_net == 'cnn':
-            model = create_deep_model(create_cnn, args.max_words, 10000,
+            preprocess, model = create_deep_model(create_cnn, args.max_words, 10000,
                                       args.epochs, args.dropout)
         elif args.neural_net == 'rnn':
-            model = create_deep_model(create_rnn, args.max_words, 10000,
+            preprocess, model = create_deep_model(create_rnn, args.max_words, 10000,
                                       args.epochs, args.dropout)
         elif args.neural_net == 'svm':
-            model = create_svm_model(k)
+            preprocess, model = create_svm_model(k)
         else:
-            model = create_model(k, args.epochs, args.dropout, args.only_nn)
+            preprocess, model = create_model(k, args.epochs, args.dropout, args.only_nn)
 
         print(f'Training model on data {len(data.X_train)} samples')
-        model.fit(data.X_train, data.y_train)
+        X_trans = preprocess.fit_transform(data.X_train, data.y_train)
+        model.fit(X_trans, data.y_train)
+        save_pipeline(preprocess, model, model_path, args.neural_net)
         # print_best_words(model)
-        save_pipeline(model, data, model_path, args.neural_net)
 
     print(f'Testing model on {len(data.y_test)} samples')
-    y_predicted = model.predict(data.X_test)
+    y_predicted = model.predict(preprocess.transform(data.X_test))
 
     acc = accuracy_score(data.y_test, y_predicted)
     plot_confusion_matrix(model, data.y_test, y_predicted)
@@ -436,7 +446,7 @@ def main():
     print(f'accuracy on testset: \t{acc:.2f}')
     print()
 
-    test_newspapers(model, args.avg_proc)
+    test_newspapers(preprocess, model, args.avg_proc)
 
 
 if __name__ == '__main__':
