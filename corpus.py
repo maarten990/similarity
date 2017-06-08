@@ -1,3 +1,4 @@
+import json
 import os.path
 import pickle
 from lxml import etree, html
@@ -17,12 +18,12 @@ def load_from_disk(folder):
             yield xml
 
 
-def get_by_party(folder, party):
+def get_by_party(folder, party, concat_proceedings=False):
     """
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'{party}.pkl'.replace('/', ' ')
+    pickle_name = f'{party}_None_{concat_proceedings}.pkl'.replace('/', ' ')
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -30,12 +31,22 @@ def get_by_party(folder, party):
 
     corpus = []
     for xml in load_from_disk(folder):
+        proceeding_texts = []
         speeches = xml.xpath(f'//pm:speech[@pm:party = "{party}"]',
                              namespaces=XMLNS)
 
         for speech in speeches:
-            text = '\n'.join(speech.xpath('pm:p/text()', namespaces=XMLNS))
-            corpus.append(text)
+            txt = ''
+            for p in speech.xpath('pm:p', namespaces=XMLNS):
+                text = '\n'.join(p.xpath('.//text()', namespaces=XMLNS))
+                txt += text
+
+            proceeding_texts.append(txt)
+
+        if concat_proceedings:
+            corpus.append(' '.join(proceeding_texts))
+        else:
+            corpus.extend(proceeding_texts)
 
     with open(pickle_name, 'wb') as f:
         pickle.dump(corpus, f)
@@ -43,7 +54,51 @@ def get_by_party(folder, party):
     return corpus
 
 
-def get_newspaper(foldername):
+def get_dutch_proceedings(folder, party, concat_proceedings=False):
+    """
+    Collect all the speeches from the given pary from the xml trees.
+    Output is a list of plaintext speeches.
+    """
+    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_None_{concat_proceedings}.pkl'
+
+    if os.path.exists(pickle_name):
+        with open(pickle_name, 'rb') as f:
+            return pickle.load(f)
+
+    corpus = []
+    for file in glob(os.path.join(folder, '*.json')):
+        with open(file, 'r') as f:
+            js = json.load(f)
+
+        proceeding_texts = []
+        for elem in js:
+            try:
+                xml = etree.fromstring(elem['_source']['xml_content'].encode('utf-8'))
+            except:
+                print('Invalid xml')
+                continue
+
+            speeches = xml.xpath('//spreekbeurt')
+
+            for speech in speeches:
+                politiek = speech.xpath('./spreker/politiek')
+                if len(politiek) > 0 and party in politiek[0].xpath('.//text()')[0]:
+                    text = '\n'.join(speech.xpath('./tekst//text()'))
+
+                    proceeding_texts.append(text)
+
+        if concat_proceedings:
+            corpus.append(' '.join(proceeding_texts))
+        else:
+            corpus.extend(proceeding_texts)
+
+    with open(pickle_name, 'wb') as f:
+        pickle.dump(corpus, f)
+
+    return corpus
+
+
+def get_newspaper(foldername, concat=False):
     """
     Return the newspaper data for all files in the given folder.
     Output is a list of plaintext speeches.
@@ -53,7 +108,11 @@ def get_newspaper(foldername):
     pickle_path = f'{foldername}.pkl'
     if os.path.exists(pickle_path):
         with open(pickle_path, 'rb') as f:
-            return pickle.load(f)
+            articles = pickle.load(f)
+            if concat:
+                return [' '.join(articles)]
+            else:
+                return articles
 
     articles = []
 
@@ -79,6 +138,9 @@ def get_newspaper(foldername):
 
     # pickle the articles
     with open(pickle_path, 'wb') as f:
-        return pickle.dump(articles, f)
+        pickle.dump(articles, f)
 
-    return articles
+    if concat:
+        return [' '.join(articles)]
+    else:
+        return articles
