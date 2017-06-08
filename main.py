@@ -15,6 +15,7 @@ from keras.layers import Activation, Dense, Dropout, Flatten
 from keras.layers import Conv1D, Embedding, MaxPool1D
 from keras.layers.recurrent import LSTM
 from keras.models import Sequential, load_model
+from keras.optimizers import RMSprop
 from keras.preprocessing.sequence import pad_sequences
 from keras.preprocessing.text import Tokenizer
 from keras.utils.np_utils import to_categorical
@@ -24,6 +25,7 @@ from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.feature_selection import SelectKBest, chi2, f_classif
 from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.naive_bayes import MultinomialNB
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
@@ -183,22 +185,30 @@ def create_neuralnet(k, dropout):
     model = Sequential([
         Dense(100, input_dim=k, activation='tanh'),
         Dropout(dropout),
-        Dense(len(parties), activation='softmax')
+        Dense(len(parties), activation='softmax'),
     ])
 
-    model.compile(optimizer='adam', loss='categorical_crossentropy',
+    model.compile(optimizer='nadam', loss='categorical_crossentropy',
                   metrics=['accuracy'])
     return model
 
 
 def create_svm_model(k):
     vectorizer = TfidfVectorizer()
-    # vectorizer = CountVectorizer()
     kbest = SelectKBest(chi2, k=k)
     scaler = StandardScaler(with_mean=False)
-    svc = SVC(probability=True)
+    svc = SVC(kernel='rbf', probability=True)
 
     return make_pipeline(vectorizer, kbest, scaler), svc
+
+
+def create_nb_model(k):
+    vectorizer = TfidfVectorizer()
+    kbest = SelectKBest(chi2, k=k)
+    unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
+    nb = MultinomialNB()
+
+    return make_pipeline(vectorizer, kbest, unsparse), nb
 
 
 def create_auto_model(k):
@@ -339,7 +349,7 @@ def get_args():
     parser.add_argument('-e', '--epochs', type=int, default=5,
                         help='number of epochs to train for')
 
-    parser.add_argument('--neural_net', '-n', choices=['keras', 'svm', 'auto'],
+    parser.add_argument('--neural_net', '-n', choices=['keras', 'svm', 'nb', 'auto'],
                         default='sklearn', help='The neural net implementation to use')
 
     parser.add_argument('--dropout', type=float, default=0.25,
@@ -382,6 +392,8 @@ def main():
     else:
         if args.neural_net == 'svm':
             preprocess, model = create_svm_model(k)
+        elif args.neural_net == 'nb':
+            preprocess, model = create_nb_model(k)
         elif args.neural_net == 'auto':
             preprocess, model = create_auto_model(k)
         else:
