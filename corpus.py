@@ -18,12 +18,12 @@ def load_from_disk(folder):
             yield xml
 
 
-def get_by_party(folder, party, concat_proceedings=False, max_words=None):
+def get_by_party(folder, party, concat_proceedings=False):
     """
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'{party}_{max_words}_{concat_proceedings}.pkl'.replace('/', ' ')
+    pickle_name = f'{party}_None_{concat_proceedings}.pkl'.replace('/', ' ')
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -41,9 +41,6 @@ def get_by_party(folder, party, concat_proceedings=False, max_words=None):
                 text = '\n'.join(p.xpath('.//text()', namespaces=XMLNS))
                 txt += text
 
-                if max_words and len(txt.split()) > max_words:
-                    break
-
             proceeding_texts.append(txt)
 
         if concat_proceedings:
@@ -57,12 +54,12 @@ def get_by_party(folder, party, concat_proceedings=False, max_words=None):
     return corpus
 
 
-def get_dutch_proceedings(folder, party, concat_proceedings=False, max_words=None):
+def get_dutch_proceedings(folder, party, concat_proceedings=False):
     """
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_{max_words}_{concat_proceedings}.pkl'
+    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_None_{concat_proceedings}.pkl'
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -87,8 +84,6 @@ def get_dutch_proceedings(folder, party, concat_proceedings=False, max_words=Non
                 politiek = speech.xpath('./spreker/politiek')
                 if len(politiek) > 0 and party in politiek[0].xpath('.//text()')[0]:
                     text = '\n'.join(speech.xpath('./tekst//text()'))
-                    if max_words:
-                        text = ' '.join(text.split()[:max_words])
 
                     proceeding_texts.append(text)
 
