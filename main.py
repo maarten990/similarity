@@ -21,7 +21,7 @@ from keras.utils.np_utils import to_categorical
 from keras.wrappers.scikit_learn import KerasClassifier
 from scipy import sparse
 from sklearn.externals import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.feature_selection import SelectKBest, chi2, f_classif
 from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
@@ -29,24 +29,37 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from sklearn.svm import SVC
 
+import autosklearn.classification
+
 import corpus
-import seaborn as sns
+# import seaborn as sns
 from tabulate import tabulate
 # import treetaggerwrapper
 
 LANG = 'de'
+parties = []
+newspapers = []
+newspaper_leanings = []
 
-if LANG == 'de':
-    parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
-    newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost', 'diezeit']
-    newspaper_leanings = ['CDU/conversative right', 'left', 'SPD/center left',
-                          'CDU/CSU', 'FDP/center left']
+def set_lang(lang):
+    global LANG
+    global parties
+    global newspapers
+    global newspaper_leanings
 
-if LANG == 'nl':
-    parties = ['CDA', 'ChristenUnie', 'D66', 'GroenLinks', 'PVV',
-               'PvdA', 'SGP', 'SP', 'VVD']
-    newspapers = ['telegraaf', 'trouw', 'volkskrant']
-    newspaper_leanings = ['eh', 'eh', 'eh']
+    LANG = lang
+
+    if LANG == 'de':
+        parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
+        newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost', 'diezeit']
+        newspaper_leanings = ['CDU/conversative right', 'left', 'SPD/center left',
+                            'CDU/CSU', 'FDP/center left']
+
+    if LANG == 'nl':
+        parties = ['CDA', 'ChristenUnie', 'D66', 'GroenLinks', 'PVV',
+                'PvdA', 'SGP', 'SP', 'VVD']
+        newspapers = ['telegraaf', 'trouw', 'volkskrant']
+        newspaper_leanings = ['eh', 'eh', 'eh']
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
@@ -168,25 +181,32 @@ def ensure_dense(X, *args, **kwargs):
 def create_neuralnet(k, dropout):
     """ Create a simple feedforward Keras neural net with k inputs """
     model = Sequential([
-        Dense(500, input_dim=k, activation='tanh'),
-        Dropout(dropout),
-        Dense(50, activation='tanh'),
+        Dense(100, input_dim=k, activation='tanh'),
         Dropout(dropout),
         Dense(len(parties), activation='softmax')
     ])
 
-    model.compile(optimizer='rmsprop', loss='categorical_crossentropy',
+    model.compile(optimizer='adam', loss='categorical_crossentropy',
                   metrics=['accuracy'])
     return model
 
 
 def create_svm_model(k):
     vectorizer = TfidfVectorizer()
+    # vectorizer = CountVectorizer()
     kbest = SelectKBest(chi2, k=k)
     scaler = StandardScaler(with_mean=False)
     svc = SVC(probability=True)
 
     return make_pipeline(vectorizer, kbest, scaler), svc
+
+
+def create_auto_model(k):
+    vectorizer = TfidfVectorizer()
+    kbest = SelectKBest(chi2, k=k)
+    auto = autosklearn.classification.AutoSklearnClassifier()
+
+    return make_pipeline(vectorizer, kbest), auto
 
 
 def create_model(k, epochs, dropout, only_nouns):
@@ -215,7 +235,7 @@ def save_pipeline(pipeline, model, path, name):
         pipeline.named_steps['postaggertransformer'].tagger.taggerlock = None
 
     if isinstance(model, KerasClassifier):
-        nnet = model.named_steps['kerasclassifier'].model
+        nnet = model.model
         nnet.save(f'{name}.h5')
         model.model = None
 
@@ -319,7 +339,7 @@ def get_args():
     parser.add_argument('-e', '--epochs', type=int, default=5,
                         help='number of epochs to train for')
 
-    parser.add_argument('--neural_net', '-n', choices=['keras', 'svm'],
+    parser.add_argument('--neural_net', '-n', choices=['keras', 'svm', 'auto'],
                         default='sklearn', help='The neural net implementation to use')
 
     parser.add_argument('--dropout', type=float, default=0.25,
@@ -334,6 +354,11 @@ def get_args():
     parser.add_argument('--avg_proc', action='store_true',
                         help='average over proceedings')
 
+    
+    lang = parser.add_mutually_exclusive_group(required=True)
+    lang.add_argument('-nl', action='store_true')
+    lang.add_argument('-de', action='store_true')
+
     return parser.parse_args()
 
 
@@ -341,19 +366,24 @@ def main():
     args = get_args()
     k = args.k
 
-    model_path = f'model_{args.neural_net}.pkl'
+    # set language
+    global LANG
+    if args.nl:
+        set_lang('nl')
+    else:
+        set_lang('de')
+
+    model_path = f'model_{args.neural_net}_{LANG}.pkl'
     data = get_train_test_data(sys.argv[1], 0.20, args.avg_proc)
 
     if os.path.exists(model_path) and args.load_from_disk:
         print('Loading model from disk')
         preprocess, model = load_pipeline(model_path, args.neural_net)
-
-        if args.retrain:
-            model.fit(data.X_train, to_categorical(data.y_train))
-            save_pipeline(preprocess, model, model_path, args.neural_net + args.only_nouns)
     else:
         if args.neural_net == 'svm':
             preprocess, model = create_svm_model(k)
+        elif args.neural_net == 'auto':
+            preprocess, model = create_auto_model(k)
         else:
             preprocess, model = create_model(k, args.epochs, args.dropout, args.only_nouns)
 
@@ -368,6 +398,9 @@ def main():
 
     acc = accuracy_score(data.y_test, y_predicted)
     plot_confusion_matrix(model, data.y_test, y_predicted)
+
+    if args.neural_net == 'auto':
+        print(model.show_models())
 
     print()
     print(f'accuracy on testset: \t{acc:.2f}')
