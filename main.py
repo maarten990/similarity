@@ -7,8 +7,10 @@ from collections import namedtuple
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_selection import chi2
 from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
 from nltk.tokenize import word_tokenize
 
@@ -64,7 +66,7 @@ def print_best_words(data, labels, k, pipeline):
     print('---')
 
 
-def get_train_test_data(folder, test_size, avg_proc=False):
+def get_train_test_data(folder, test_size, avg_proc=False, filter_pronouns=False):
     """
     Return the raw input data and labels, split into training and test data.
     folder: the folder containing the xml files to learn on
@@ -92,15 +94,18 @@ def get_train_test_data(folder, test_size, avg_proc=False):
     y = np.array(all_labels)
 
     # filter party and speaker names from the speeches
-    names = corpus.get_pronouns(folder)
-    names |= set(['grüne', 'sozialdemokraten', 'sozialdemokratinnen',
-                  'grünensowie', 'grünenund'])
-    X_filtered = []
-    for speech in X:
-        tokens = word_tokenize(speech)
-        X_filtered.append(' '.join(t for t in tokens if t.lower() not in names))
+    if filter_pronouns:
+        names = corpus.get_pronouns(folder)
+        names |= set(['grüne', 'sozialdemokraten', 'sozialdemokratinnen',
+                      'grünensowie', 'grünenund'])
+        X_filtered = []
+        for speech in X:
+            tokens = word_tokenize(speech)
+            X_filtered.append(' '.join(t for t in tokens if t.lower() not in names))
 
-    data = Data(*train_test_split(X_filtered, y, test_size=test_size, random_state=12))
+        data = Data(*train_test_split(X_filtered, y, test_size=test_size, random_state=12))
+    else:
+        data = Data(*train_test_split(X, y, test_size=test_size, random_state=12))
 
     return data
 
@@ -174,6 +179,44 @@ def plot_confusion_matrix(model, y_true, y_predicted):
     plt.savefig('confusion_matrix.png')
 
 
+def cosine_method(data):
+    # concatenate the training and test data together, since we're not learning
+    X = np.concatenate((data.X_train, data.X_test), axis=0)
+    y = np.concatenate((data.y_train, data.y_test), axis=0)
+
+    # vectorize the documents
+    vectorizer = TfidfVectorizer()
+    document_vectors = np.asarray(vectorizer.fit_transform(X).todense())
+
+    # group by party and take the mean
+    party_vectors = [document_vectors[(y == label), :]
+                     for label in range(len(parties))]
+
+    mean_party_vectors = np.array([np.mean(vectors, axis=0) for vectors in party_vectors])
+
+    # print cosine similarity between parties
+    for i1 in range(len(parties)):
+        for i2 in range(i1, len(parties)):
+            sim = cosine_similarity([mean_party_vectors[i1, :]],
+                                    [mean_party_vectors[i2, :]])
+
+            print(f'{parties[i1]}, {parties[i2]}: {sim}')
+
+    # get the newspaper data, vectorize it and get the mean
+    paper_vectors = [vectorizer.transform(corpus.get_newspaper(paper, True))
+                     for paper in newspapers]
+
+    table_rows = []
+    for i, paper in enumerate(paper_vectors):
+        row = [newspapers[i]]
+        for party in range(len(parties)):
+            row.append(cosine_similarity(mean_party_vectors[party, :], paper))
+
+        table_rows.append(row)
+
+    print(tabulate(table_rows, headers=parties, floatfmt=".3f"))
+
+
 def get_args():
     parser = argparse.ArgumentParser(description='Predict political left-rightness')
     parser.add_argument('folder', help='folder containing the training data')
@@ -221,19 +264,20 @@ def main():
     model_path = f'model_{args.method}_{LANG}.pkl'
     data = get_train_test_data(sys.argv[1], 0.20, args.avg_proc)
 
+    if args.method == 'cossim':
+        return cosine_method(data)
+
     if os.path.exists(model_path) and args.load_from_disk:
         print('Loading model from disk')
         preprocess, model = models.load_pipeline(model_path, args.method)
     else:
-        if args.method == 'svm':
-            preprocess, model = models.create_svm_model(k)
-        elif args.method == 'nb':
-            preprocess, model = models.create_nb_model(k)
-        elif args.method == 'auto':
-            preprocess, model = models.create_auto_model(k)
-        else:
-            preprocess, model = models.create_model(k, args.epochs,
-                                                    args.dropout, len(parties))
+        preprocess, model = {
+            'svm': lambda: models.create_svm_model(k),
+            'nb': lambda: models.create_nb_model(k),
+            'auto': lambda: models.create_auto_model(k),
+            'keras': lambda: models.create_model(k, args.epochs, args.dropout,
+                                                 len(parties)),
+        }.get(args.method)()
 
         print(f'Training model on data {len(data.X_train)} samples')
         X_trans = preprocess.fit_transform(data.X_train, data.y_train)

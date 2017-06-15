@@ -1,7 +1,6 @@
 import json
 import os.path
 import pickle
-import re
 from lxml import etree, html
 from glob import glob
 
