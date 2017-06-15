@@ -1,6 +1,7 @@
 import argparse
 import itertools
 import os.path
+import pickle
 import sys
 from collections import namedtuple
 
@@ -12,7 +13,10 @@ from sklearn.feature_selection import chi2
 from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
+from nltk.corpus import stopwords
+from nltk.stem.snowball import GermanStemmer
 from nltk.tokenize import word_tokenize
+from tqdm import tqdm
 
 import corpus
 import models
@@ -47,6 +51,28 @@ def set_lang(lang):
 
 # convenient datastructure to hold training and test data
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
+
+
+def pickle_results(func):
+    def pickled_func(*args, **kwargs):
+        if 'pkl_path' not in kwargs:
+            return func(*args, **kwargs)
+        else:
+            path = kwargs['pkl_path']
+
+            if os.path.exists(path):
+                print(f'Loading {path} from disk')
+                with open(path, 'rb') as f:
+                    return pickle.load(f)
+
+            output = func(path, *args, **kwargs)
+            print(f'Saving {path} to disk')
+            with open(path, 'wb') as f:
+                pickle.dump(output, f)
+
+            return output
+
+    return pickled_func
 
 
 def print_best_words(data, labels, k, pipeline):
@@ -179,13 +205,29 @@ def plot_confusion_matrix(model, y_true, y_predicted):
     plt.savefig('confusion_matrix.png')
 
 
+@pickle_results
+def cosine_preprocess(texts, pkl_path=None):
+    processed = []
+    for text in tqdm(texts):
+        stemmer = GermanStemmer()
+        words = stopwords.words('german')
+
+        tokens = [stemmer.stem(token) for token in word_tokenize(text)
+                  if token not in words]
+
+        processed.append(' '.join(tokens))
+
+    return processed
+
+
 def cosine_method(data):
     # concatenate the training and test data together, since we're not learning
     X = np.concatenate((data.X_train, data.X_test), axis=0)
     y = np.concatenate((data.y_train, data.y_test), axis=0)
+    X = cosine_preprocess(X, pkl_path='preprocessed.pkl')
 
     # vectorize the documents
-    vectorizer = TfidfVectorizer()
+    vectorizer = TfidfVectorizer(max_df=1.0)
     document_vectors = np.asarray(vectorizer.fit_transform(X).todense())
 
     # group by party and take the mean
@@ -193,6 +235,7 @@ def cosine_method(data):
                      for label in range(len(parties))]
 
     mean_party_vectors = np.array([np.mean(vectors, axis=0) for vectors in party_vectors])
+    print(mean_party_vectors.shape)
 
     # print cosine similarity between parties
     for i1 in range(len(parties)):
@@ -200,7 +243,7 @@ def cosine_method(data):
             sim = cosine_similarity([mean_party_vectors[i1, :]],
                                     [mean_party_vectors[i2, :]])
 
-            print(f'{parties[i1]}, {parties[i2]}: {sim}')
+            print(f'{parties[i1]}, {parties[i2]}: {sim[0, 0]}')
 
     # get the newspaper data, vectorize it and get the mean
     paper_vectors = [vectorizer.transform(corpus.get_newspaper(paper, True))
@@ -210,9 +253,13 @@ def cosine_method(data):
     for i, paper in enumerate(paper_vectors):
         row = [newspapers[i]]
         for party in range(len(parties)):
-            row.append(cosine_similarity(mean_party_vectors[party, :], paper))
+            row.append(cosine_similarity([mean_party_vectors[party, :]], paper)[0, 0])
 
+        # add a softmaxed version to amplify differences
+        scores = row[1:]
+        softmax = np.exp(scores) / np.sum(np.exp(scores))
         table_rows.append(row)
+        table_rows.append([row[0] + ' softmax'] + softmax.tolist())
 
     print(tabulate(table_rows, headers=parties, floatfmt=".3f"))
 
