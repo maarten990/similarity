@@ -1,6 +1,7 @@
 import json
 import os.path
 import pickle
+import re
 from lxml import etree, html
 from glob import glob
 
@@ -18,12 +19,32 @@ def load_from_disk(folder):
             yield xml
 
 
+def get_pronouns(folder):
+    all_names = set()
+    all_parties = set()
+    for xml in load_from_disk(folder):
+        speakers = xml.xpath('//pm:speech/@pm:speaker', namespaces=XMLNS)
+        parties = xml.xpath('//pm:speech/@pm:party', namespaces=XMLNS)
+
+        for speaker in speakers:
+            for subname in speaker.lower().split():
+                if len(subname) > 3:
+                    all_names.add(subname)
+
+        for party in parties:
+            for subname in party.lower().replace('/', ' ').split():
+                if len(subname) > 3:
+                    all_parties.add(subname)
+
+    return all_names | all_parties
+
+
 def get_by_party(folder, party, concat_proceedings=False):
     """
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'{party}_None_{concat_proceedings}.pkl'.replace('/', ' ')
+    pickle_name = f'{party}_{concat_proceedings}.pkl'.replace('/', ' ')
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -59,7 +80,7 @@ def get_dutch_proceedings(folder, party, concat_proceedings=False):
     Collect all the speeches from the given pary from the xml trees.
     Output is a list of plaintext speeches.
     """
-    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_None_{concat_proceedings}.pkl'
+    pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_{concat_proceedings}.pkl'
 
     if os.path.exists(pickle_name):
         with open(pickle_name, 'rb') as f:
@@ -84,7 +105,6 @@ def get_dutch_proceedings(folder, party, concat_proceedings=False):
                 politiek = speech.xpath('./spreker/politiek')
                 if len(politiek) > 0 and party in politiek[0].xpath('.//text()')[0]:
                     text = '\n'.join(speech.xpath('./tekst//text()'))
-
                     proceeding_texts.append(text)
 
         if concat_proceedings:
