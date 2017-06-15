@@ -3,8 +3,10 @@ import itertools
 import os.path
 import pickle
 import sys
-from collections import namedtuple
+from collections import namedtuple, Counter
+from operator import itemgetter
 
+import gensim
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats
@@ -264,6 +266,58 @@ def cosine_method(data):
     print(tabulate(table_rows, headers=parties, floatfmt=".3f"))
 
 
+def doc2vec_method(data):
+    pkl_path = 'doc_embeddings.model'
+    if os.path.exists(pkl_path):
+        model = gensim.models.Doc2Vec.load(pkl_path)
+    else:
+        # create a tagged corpus
+        train_corpus = [gensim.models.doc2vec.TaggedDocument(gensim.utils.simple_preprocess(doc),
+                                                             [data.y_train[i]])
+                        for i, doc in enumerate(data.X_train)]
+
+        model = gensim.models.doc2vec.Doc2Vec(dm=0, size=64, min_count=2, iter=20)
+        model.build_vocab(train_corpus)
+        model.train(train_corpus, total_examples=model.corpus_count)
+        model.save(pkl_path)
+
+    # test on testset
+    rows = []
+    for i, party in enumerate(parties):
+        docs = [gensim.utils.simple_preprocess(x)
+                for x, y in zip(data.X_test, data.y_test)
+                if y == i]
+
+        best_matches = []
+        for doc in docs:
+            best_matches.append(model.docvecs.most_similar([model.infer_vector(doc)])[0][0])
+
+        c = Counter(best_matches)
+        acc = c[i] / np.sum([c.get(pred, 0) for pred in range(len(parties))])
+        row = [party] + [c.get(pred, 0) for pred in range(len(parties))] + [acc]
+        rows.append(row)
+
+    print(tabulate(rows, headers=parties + ['prec'], floatfmt=".3f"))
+
+    # test on newspapers
+    rows = []
+    for i, paper in enumerate(newspapers):
+        docs = [gensim.utils.simple_preprocess(x)
+                for x in corpus.get_newspaper(paper, False)]
+
+        similarities = []
+        for doc in docs:
+            # sort by label
+            sims = sorted(model.docvecs.most_similar([model.infer_vector(doc)]))
+            similarities.append(list(map(itemgetter(1), sims)))
+
+        values = np.mean(similarities, axis=0)
+        row = [paper] + values.tolist()
+        rows.append(row)
+
+    print(tabulate(rows, headers=parties, floatfmt=".3f"))
+
+
 def get_args():
     parser = argparse.ArgumentParser(description='Predict political left-rightness')
     parser.add_argument('folder', help='folder containing the training data')
@@ -275,7 +329,7 @@ def get_args():
                         help='number of epochs to train for')
 
     parser.add_argument('--method', '-m', choices=['keras', 'svm', 'nb',
-                                                   'auto', 'cossim'],
+                                                   'auto', 'cossim', 'doc2vec'],
                         default='sklearn', help='The method to use')
 
     parser.add_argument('--dropout', type=float, default=0.25,
@@ -313,6 +367,8 @@ def main():
 
     if args.method == 'cossim':
         return cosine_method(data)
+    if args.method == 'doc2vec':
+        return doc2vec_method(data)
 
     if os.path.exists(model_path) and args.load_from_disk:
         print('Loading model from disk')
