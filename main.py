@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 import corpus
 import models
+import requests
 from tabulate import tabulate
 
 LANG = 'de'
@@ -55,6 +56,11 @@ def set_lang(lang):
 Data = namedtuple('Data', ['X_train', 'X_test', 'y_train', 'y_test'])
 
 
+def message(msg):
+    requests.post('http://maarten.sexy:5000/',
+                  {'message': msg})
+
+
 def pickle_results(func):
     def pickled_func(*args, **kwargs):
         if 'pkl_path' not in kwargs:
@@ -67,7 +73,7 @@ def pickle_results(func):
                 with open(path, 'rb') as f:
                     return pickle.load(f)
 
-            output = func(path, *args, **kwargs)
+            output = func(*args, **kwargs)
             print(f'Saving {path} to disk')
             with open(path, 'wb') as f:
                 pickle.dump(output, f)
@@ -229,15 +235,23 @@ def cosine_method(data):
     X = cosine_preprocess(X, pkl_path='preprocessed.pkl')
 
     # vectorize the documents
-    vectorizer = TfidfVectorizer(max_df=1.0)
-    document_vectors = np.asarray(vectorizer.fit_transform(X).todense())
+    # vectorizer = TfidfVectorizer(max_df=1.0)
+    vectorizer = models.SentimentVectorizer(topics)
+    document_vectors = vectorizer.fit_transform(X)
+
+    # filter all-zero samples
+    non_zero_indices = np.any(document_vectors, axis=1)
+    document_vectors = document_vectors[non_zero_indices, :]
+    y = y[non_zero_indices]
 
     # group by party and take the mean
     party_vectors = [document_vectors[(y == label), :]
                      for label in range(len(parties))]
 
     mean_party_vectors = np.array([np.mean(vectors, axis=0) for vectors in party_vectors])
-    print(mean_party_vectors.shape)
+    for i in range(mean_party_vectors.shape[0]):
+        if np.nan in mean_party_vectors[i, :]:
+            mean_party_vectors[i, :] = np.zeros(mean_party_vectors.shape[1])
 
     # print cosine similarity between parties
     for i1 in range(len(parties)):
@@ -251,22 +265,37 @@ def cosine_method(data):
     paper_vectors = [vectorizer.transform(corpus.get_newspaper(paper, True))
                      for paper in newspapers]
 
-    table_rows = []
+    rows = []
     for i, paper in enumerate(paper_vectors):
         row = [newspapers[i]]
         for party in range(len(parties)):
             row.append(cosine_similarity([mean_party_vectors[party, :]], paper)[0, 0])
 
         # add a softmaxed version to amplify differences
-        scores = row[1:]
-        softmax = np.exp(scores) / np.sum(np.exp(scores))
-        table_rows.append(row)
-        table_rows.append([row[0] + ' softmax'] + softmax.tolist())
+        # scores = row[1:]
+        # softmax = np.exp(scores) / np.sum(np.exp(scores))
 
-    print(tabulate(table_rows, headers=parties, floatfmt=".3f"))
+        rows.append(row)
+        # table_rows.append([row[0] + ' softmax'] + softmax.tolist())
+
+    print(tabulate(rows, headers=parties, floatfmt=".3f"))
+
+    # subtract each newspaper's mean to account for overall more political
+    # use of language
+    value_matrix = np.array(rows)[:, 1:].astype(np.float32)
+    means = np.mean(value_matrix, axis=1)
+    means_subtracted = (value_matrix.T - means).T
+    for i in range(len(rows)):
+        for j in range(1, len(rows[i])):
+            rows[i][j] = means_subtracted[i, j - 1]
+
+    print(tabulate(rows, headers=parties, floatfmt=".3f"))
 
 
 def doc2vec_method(data):
+    X_train = cosine_preprocess(data.X_train, pkl_path='doc2vec_xtrain_prepr.pkl')
+    X_test = cosine_preprocess(data.X_test, pkl_path='doc2vec_xtest_prepr.pkl')
+
     pkl_path = 'doc_embeddings.model'
     if os.path.exists(pkl_path):
         model = gensim.models.Doc2Vec.load(pkl_path)
@@ -274,7 +303,7 @@ def doc2vec_method(data):
         # create a tagged corpus
         train_corpus = [gensim.models.doc2vec.TaggedDocument(gensim.utils.simple_preprocess(doc),
                                                              [data.y_train[i]])
-                        for i, doc in enumerate(data.X_train)]
+                        for i, doc in enumerate(X_train)]
 
         model = gensim.models.doc2vec.Doc2Vec(dm=0, size=64, min_count=2, iter=20)
         model.build_vocab(train_corpus)
@@ -282,10 +311,11 @@ def doc2vec_method(data):
         model.save(pkl_path)
 
     # test on testset
+    message('Testing')
     rows = []
     for i, party in enumerate(parties):
         docs = [gensim.utils.simple_preprocess(x)
-                for x, y in zip(data.X_test, data.y_test)
+                for x, y in zip(X_test, data.y_test)
                 if y == i]
 
         best_matches = []
@@ -317,6 +347,17 @@ def doc2vec_method(data):
 
     print(tabulate(rows, headers=parties, floatfmt=".3f"))
 
+    # subtract each newspaper's mean to account for overall more political
+    # use of language
+    value_matrix = np.array(rows)[:, 1:].astype(np.float32)
+    means = np.mean(value_matrix, axis=1)
+    means_subtracted = (value_matrix.T - means).T
+    for i in range(len(rows)):
+        for j in range(1, len(rows[i])):
+            rows[i][j] = means_subtracted[i, j - 1]
+
+    print(tabulate(rows, headers=parties, floatfmt=".3f"))
+
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict political left-rightness')
@@ -328,7 +369,7 @@ def get_args():
     parser.add_argument('-e', '--epochs', type=int, default=5,
                         help='number of epochs to train for')
 
-    parser.add_argument('--method', '-m', choices=['keras', 'svm', 'nb',
+    parser.add_argument('--method', '-m', choices=['keras', 'svm', 'nb', 'svm_sent',
                                                    'auto', 'cossim', 'doc2vec'],
                         default='sklearn', help='The method to use')
 
@@ -349,6 +390,22 @@ def get_args():
     lang.add_argument('-de', action='store_true')
 
     return parser.parse_args()
+
+
+topics = ['profite',
+          'vermögenden',
+          'erwerbslosen',
+          'kurdinnen',
+          'vermögensteuer',
+          'profitinteressen',
+          'sozialabbau',
+          'ostfriesland',
+          'kürzungspolitik',
+          'zukunftsvergessen',
+          'integrationskraft',
+          'superreichen',
+          'klimakrise',
+          'terrorbanden']
 
 
 def main():
@@ -376,6 +433,7 @@ def main():
     else:
         preprocess, model = {
             'svm': lambda: models.create_svm_model(k),
+            'svm_sent': lambda: models.create_svm_sent_model(k, topics),
             'nb': lambda: models.create_nb_model(k),
             'auto': lambda: models.create_auto_model(k),
             'keras': lambda: models.create_model(k, args.epochs, args.dropout,
@@ -384,11 +442,12 @@ def main():
 
         print(f'Training model on data {len(data.X_train)} samples')
         X_trans = preprocess.fit_transform(data.X_train, data.y_train)
+        print(f'Number of features: {X_trans.shape[1]}')
         model.fit(X_trans, data.y_train)
         models.save_pipeline(preprocess, model, model_path, args.method)
 
     if args.method != 'keras':
-        print_best_words(data.X_train, data.y_train, 20, preprocess)
+        print_best_words(data.X_train, data.y_train, 30, preprocess)
 
     print(f'Testing model on {len(data.y_test)} samples')
     y_predicted = model.predict(preprocess.transform(data.X_test))
