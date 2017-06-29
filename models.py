@@ -8,7 +8,7 @@ from keras.models import Sequential, load_model
 from keras.wrappers.scikit_learn import KerasClassifier
 from scipy import sparse
 from sklearn.externals import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import make_pipeline
@@ -19,6 +19,45 @@ import autosklearn.classification
 from nltk.tokenize import word_tokenize
 from sentistrength.senti_client import sentistrength
 from tqdm import tqdm
+
+
+class WeightedTfidfVectorizer:
+    def __init__(self, newspaper_data):
+        self.countvec = CountVectorizer()
+        self.countvec_papers = CountVectorizer()
+        self.paper_counts = self.countvec_papers.fit_transform(newspaper_data)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+    def fit(self, X, y=None):
+        self.countvec.fit(X)
+
+        # get the overlapping set of words
+        words = self.countvec.get_feature_names()
+        common_words_idx = np.in1d(words, self.countvec_papers.get_feature_names())
+        common_words_idx = np.nonzero(common_words_idx)[0]
+        self.common_words = np.array(words)[common_words_idx]
+        self.common_word_idx = [self.countvec.vocabulary_[w] for w in self.common_words]
+        self.common_word_idx_papers = [self.countvec_papers.vocabulary_[w]
+                                       for w in self.common_words]
+
+        # filter for only the common words
+        counts = self.countvec.transform(X)
+        vec = counts[:, self.common_word_idx]
+        vec_paper = self.paper_counts[:, self.common_word_idx_papers]
+
+        # average the counts for each word for both the bundestag and the newspapers
+        avg = np.mean(vec, axis=0)
+        paper_avg = np.mean(vec_paper, axis=0)
+
+        # the weights are then a measure of difference between the 2 'distributions'
+        self.weights = np.divide(1, np.square(avg - paper_avg))
+
+        return self
+
+    def transform(self, X):
+        counts = self.countvec.transform(X)
 
 
 class SentimentVectorizer:
