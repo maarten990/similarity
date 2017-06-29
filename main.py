@@ -40,9 +40,9 @@ def set_lang(lang):
 
     if LANG == 'de':
         parties = ['DIE LINKE', 'BÜNDNIS 90/DIE GRÜNEN', 'SPD', 'CDU/CSU']
-        newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost', 'diezeit']
+        newspapers = ['diewelt', 'taz', 'spiegel', 'rheinischepost', 'diezeit', 'bild']
         newspaper_leanings = ['CDU/conversative right', 'left', 'SPD/center left',
-                              'CDU/CSU', 'FDP/center left']
+                              'CDU/CSU', 'FDP/center left', 'right']
 
     if LANG == 'nl':
         parties = ['CDA', 'ChristenUnie', 'D66', 'GroenLinks', 'PVV',
