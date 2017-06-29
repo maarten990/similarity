@@ -1,4 +1,6 @@
+import os.path
 import threading
+import pickle
 
 import numpy as np
 from keras.layers import Dense, Dropout
@@ -14,9 +16,120 @@ from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from sklearn.svm import SVC
 
 import autosklearn.classification
+from nltk.tokenize import word_tokenize
+from sentistrength.senti_client import sentistrength
+from tqdm import tqdm
 
 
-def ensure_dense(X, *args, **kwargs):
+class SentimentVectorizer:
+    def __init__(self, topics, lang='DE'):
+        self.topics = topics
+        self.senti = sentistrength(lang)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        pkl_path = 'sentiment_avg.pkl'
+
+        if os.path.exists(pkl_path):
+            print(f'Loading {pkl_path} from disk')
+            with open(pkl_path, 'rb') as f:
+                return pickle.load(f)
+
+        sentiments = []
+
+        for sample in tqdm(X):
+            sample_sentiment = []
+
+            for topic in self.topics:
+                # collect the average sentiment for this topic in the current
+                # document
+                topic_sentiment = []
+                words = word_tokenize(sample)
+
+                indices = [i for i, w in enumerate(words) if w == topic]
+                for idx in indices:
+                    start = max(0, idx - 5)
+                    end = min(len(sample), idx + 6)
+                    sent_dict = self.senti.get_sentiment(' '.join(words[start:end]))
+                    topic_sentiment.append([int(sent_dict[key])
+                                            for key in ['positive', 'negative', 'neutral']])
+
+                if len(topic_sentiment) > 0:
+                    avg = np.mean(np.array(topic_sentiment), axis=0)
+                else:
+                    avg = np.array([0, 0, 0])
+
+                sample_sentiment.extend(avg.tolist())
+
+            sentiments.append(sample_sentiment)
+
+        print(f'Saving {pkl_path} to disk')
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(np.array(sentiments), f)
+
+        return np.array(sentiments)
+
+
+class SentimentVectorizer2:
+    def __init__(self, topics, lang='DE'):
+        self.topics = topics
+        self.senti = sentistrength(lang)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        pkl_path = 'sentiment_.pkl'
+
+        if os.path.exists(pkl_path):
+            print(f'Loading {pkl_path} from disk')
+            with open(pkl_path, 'rb') as f:
+                return pickle.load(f)
+
+        sentiments = []
+
+        for sample in tqdm(X):
+            sample_sentiment = []
+
+            for topic in self.topics:
+                # collect the average sentiment for this topic in the current
+                # document
+                topic_sentiment = []
+                words = word_tokenize(sample)
+
+                indices = [i for i, w in enumerate(words) if w == topic]
+                for idx in indices:
+                    start = max(0, idx - 5)
+                    end = min(len(sample), idx + 6)
+                    sent_dict = self.senti.get_sentiment(' '.join(words[start:end]))
+                    topic_sentiment.append([int(sent_dict[key])
+                                            for key in ['positive', 'negative', 'neutral']])
+
+                if len(topic_sentiment) > 0:
+                    avg = np.mean(np.array(topic_sentiment), axis=0)
+                else:
+                    avg = np.array([0, 0, 0])
+
+                sample_sentiment.extend(avg.tolist())
+
+            sentiments.append(sample_sentiment)
+
+        print(f'Saving {pkl_path} to disk')
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(np.array(sentiments), f)
+
+        return np.array(sentiments)
+
+
+def ensure_dense(X):
     """ If the input is a sparse matrix, convert it to a dense one. """
     if sparse.issparse(X):
         # todense() returns a matrix, so convert it to an array
@@ -41,10 +154,19 @@ def create_neuralnet(k, dropout, num_parties):
 def create_svm_model(k):
     vectorizer = TfidfVectorizer()
     kbest = SelectKBest(chi2, k=k)
+
     scaler = StandardScaler(with_mean=False)
-    svc = SVC(kernel='rbf', probability=True)
+    svc = SVC(kernel='linear', probability=True)
 
     return make_pipeline(vectorizer, kbest, scaler), svc
+
+
+def create_svm_sent_model(k, topics):
+    vectorizer = SentimentVectorizer(topics)
+    scaler = StandardScaler(with_mean=False)
+    svc = SVC(kernel='linear', probability=True)
+
+    return make_pipeline(vectorizer, scaler), svc
 
 
 def create_nb_model(k):
