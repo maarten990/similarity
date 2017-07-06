@@ -236,7 +236,9 @@ def cosine_method(data):
 
     # vectorize the documents
     # vectorizer = TfidfVectorizer(max_df=1.0)
-    vectorizer = models.SentimentVectorizer(topics)
+    # vectorizer = models.SentimentVectorizer(topics)
+    vectorizer = models.WeightedTfidfVectorizer(
+        [a for articles in [corpus.get_newspaper(paper, False) for paper in newspapers] for a in articles])
     document_vectors = vectorizer.fit_transform(X)
 
     # filter all-zero samples
@@ -254,12 +256,12 @@ def cosine_method(data):
             mean_party_vectors[i, :] = np.zeros(mean_party_vectors.shape[1])
 
     # print cosine similarity between parties
-    for i1 in range(len(parties)):
-        for i2 in range(i1, len(parties)):
-            sim = cosine_similarity([mean_party_vectors[i1, :]],
-                                    [mean_party_vectors[i2, :]])
+    # for i1 in range(len(parties)):
+    #     for i2 in range(i1, len(parties)):
+    #         sim = cosine_similarity([mean_party_vectors[i1, :]],
+    #                                 [mean_party_vectors[i2, :]])
 
-            print(f'{parties[i1]}, {parties[i2]}: {sim[0, 0]}')
+    #         print(f'{parties[i1]}, {parties[i2]}: {sim[0, 0]}')
 
     # get the newspaper data, vectorize it and get the mean
     paper_vectors = [vectorizer.transform(corpus.get_newspaper(paper, True))
@@ -271,13 +273,10 @@ def cosine_method(data):
         for party in range(len(parties)):
             row.append(cosine_similarity([mean_party_vectors[party, :]], paper)[0, 0])
 
-        # add a softmaxed version to amplify differences
-        # scores = row[1:]
-        # softmax = np.exp(scores) / np.sum(np.exp(scores))
-
         rows.append(row)
-        # table_rows.append([row[0] + ' softmax'] + softmax.tolist())
 
+    print()
+    print('Similarity scores:')
     print(tabulate(rows, headers=parties, floatfmt=".3f"))
 
     # subtract each newspaper's mean to account for overall more political
@@ -289,6 +288,20 @@ def cosine_method(data):
         for j in range(1, len(rows[i])):
             rows[i][j] = means_subtracted[i, j - 1]
 
+    print()
+    print('Mean subtracted per newspaper:')
+    print(tabulate(rows, headers=parties, floatfmt=".3f"))
+
+    # subtract each party's
+    value_matrix = np.array(rows)[:, 1:].astype(np.float32)
+    means = np.mean(value_matrix, axis=0)
+    means_subtracted = value_matrix - means
+    for i in range(len(rows)):
+        for j in range(1, len(rows[i])):
+            rows[i][j] = means_subtracted[i, j - 1]
+
+    print()
+    print('Mean subtracted per party:')
     print(tabulate(rows, headers=parties, floatfmt=".3f"))
 
 

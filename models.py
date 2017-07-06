@@ -18,6 +18,7 @@ from sklearn.svm import SVC
 import autosklearn.classification
 from nltk.tokenize import word_tokenize
 from sentistrength.senti_client import sentistrength
+from tabulate import tabulate
 from tqdm import tqdm
 
 
@@ -48,16 +49,43 @@ class WeightedTfidfVectorizer:
         vec_paper = self.paper_counts[:, self.common_word_idx_papers]
 
         # average the counts for each word for both the bundestag and the newspapers
-        avg = np.mean(vec, axis=0)
-        paper_avg = np.mean(vec_paper, axis=0)
+        avg = np.asarray(np.mean(vec, axis=0)).squeeze()
+        paper_avg = np.asarray(np.mean(vec_paper, axis=0)).squeeze()
 
         # the weights are then a measure of difference between the 2 'distributions'
-        self.weights = np.divide(1, np.square(avg - paper_avg))
+        self.weights = np.divide(1, np.abs(avg - paper_avg) + 1)
+
+        # print the heighest and lowest weighted words
+        sorted_indices = sorted(list(range(len(self.weights))),
+                                key=lambda i: self.weights[i])
+        names = self.countvec.get_feature_names()
+        lowest = [[names[self.common_word_idx[i]], self.weights[i], avg[i], paper_avg[i]]
+                  for i in sorted_indices[:10]]
+        highest = [[names[self.common_word_idx[i]], self.weights[i], avg[i], paper_avg[i]]
+                   for i in sorted_indices[-10:]]
+        print('Lowest weights:')
+        print(tabulate(lowest, headers=['Word', 'Weight', 'Count parliament', 'Count papers']))
+        print()
+        print('Heighest weights:')
+        print(tabulate(highest, headers=['Word', 'Weight', 'Count parliament', 'Count papers']))
+        print()
+
 
         return self
 
     def transform(self, X):
+        # restrict the counts to the common vocabulary and convert it to a
+        # dense representation to speed up the multiplication
         counts = self.countvec.transform(X)
+        counts = counts[:, self.common_word_idx]
+        counts = np.asarray(counts.todense())
+
+        # repeat the weights in the 0th dimension to match the size of counts
+        n_samples = counts.shape[0]
+        weights = np.tile(self.weights, (n_samples, 1))
+
+        # elementwise multiplication
+        return np.multiply(weights, counts)
 
 
 class SentimentVectorizer:
