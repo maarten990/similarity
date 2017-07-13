@@ -1,8 +1,9 @@
 import json
 import os.path
 import pickle
-from lxml import etree, html
 from glob import glob
+
+from lxml import etree, html
 
 XMLNS = {'pm': 'http://www.politicalmashup.nl',
          'dc': 'http://purl.org/dc/elements/1.1'}
@@ -38,23 +39,41 @@ def get_pronouns(folder):
     return all_names | all_parties
 
 
-def get_by_party(folder, party, concat_proceedings=False):
+def get_speeches_german(folder, party, concat_proceedings=False,
+                        pickle_folder='pickle'):
     """
-    Collect all the speeches from the given pary from the xml trees.
-    Output is a list of plaintext speeches.
-    """
-    pickle_name = f'{party}_{concat_proceedings}.pkl'.replace('/', ' ')
+    Collect all the speeches from the given party.
 
-    if os.path.exists(pickle_name):
-        with open(pickle_name, 'rb') as f:
+    Parameters:
+    folder: The folder containing the xml files.
+
+    party: The name of the party whose speeches to return, as written in the
+    xml files.
+
+    concat_proceedings: If True, concatenate all speeches within each
+    proceeding (i.e. each xml file). If False, return each speech separately.
+
+    pickle_folder: The folder to save the pickled output.
+
+    Output:
+    A list of plaintext speeches.
+    """
+
+    pickle_name = f'{party}_{concat_proceedings}.pkl'.replace('/', ' ')
+    pickle_path = os.path.join(pickle_folder, pickle_name)
+
+    # Return from disk if possible for efficiency reasons
+    if os.path.exists(pickle_path):
+        with open(pickle_path, 'rb') as f:
             return pickle.load(f)
 
-    corpus = []
+    output = []
     for xml in load_from_disk(folder):
         proceeding_texts = []
         speeches = xml.xpath(f'//pm:speech[@pm:party = "{party}"]',
                              namespaces=XMLNS)
 
+        # for each speech, concatenate each paragraph
         for speech in speeches:
             txt = ''
             for p in speech.xpath('pm:p', namespaces=XMLNS):
@@ -63,29 +82,53 @@ def get_by_party(folder, party, concat_proceedings=False):
 
             proceeding_texts.append(txt)
 
+        # join the speeches together is concat_proceedings is true, otherwise
+        # simply add all the speeches to the output
         if concat_proceedings:
-            corpus.append(' '.join(proceeding_texts))
+            output.append(' '.join(proceeding_texts))
         else:
-            corpus.extend(proceeding_texts)
+            output.extend(proceeding_texts)
 
-    with open(pickle_name, 'wb') as f:
-        pickle.dump(corpus, f)
+    # Pickle the output
+    if not os.path.exists(pickle_folder):
+        os.makedirs(pickle_folder)
 
-    return corpus
+    with open(pickle_path, 'wb') as f:
+        pickle.dump(output, f)
+
+    return output
 
 
-def get_dutch_proceedings(folder, party, concat_proceedings=False):
+def get_speeches_dutch(folder, party, concat_proceedings=False,
+                       pickle_folder='pickle'):
     """
-    Collect all the speeches from the given pary from the xml trees.
-    Output is a list of plaintext speeches.
+    Collect all the speeches from the given party..
+
+    Parameters:
+    folder: The folder containing the Dutch data.
+
+    party: The name of the party whose speeches to return, as written in the
+    data.
+
+    concat_proceedings: If True, concatenate all speeches within each
+    proceeding (i.e. each xml file). If False, return each speech separately.
+
+    pickle_folder: The folder to save the pickled output.
+
+    Output:
+    A list of plaintext speeches.
     """
     pickle_name = f'dutch_pkl/dutch_{party.replace("/", " ")}_{concat_proceedings}.pkl'
+    pickle_path = os.path.join(pickle_folder, pickle_name)
 
-    if os.path.exists(pickle_name):
-        with open(pickle_name, 'rb') as f:
+    # Return from disk if possible for efficiency reasons
+    if os.path.exists(pickle_path):
+        with open(pickle_path, 'rb') as f:
             return pickle.load(f)
 
-    corpus = []
+    output = []
+
+    # each file is xml data buried inside json data
     for file in glob(os.path.join(folder, '*.json')):
         with open(file, 'r') as f:
             js = json.load(f)
@@ -95,7 +138,7 @@ def get_dutch_proceedings(folder, party, concat_proceedings=False):
             try:
                 xml = etree.fromstring(elem['_source']['xml_content'].encode('utf-8'))
             except:
-                print('Invalid xml')
+                print(f'Invalid xml in {file}')
                 continue
 
             speeches = xml.xpath('//spreekbeurt')
@@ -106,25 +149,33 @@ def get_dutch_proceedings(folder, party, concat_proceedings=False):
                     text = '\n'.join(speech.xpath('./tekst//text()'))
                     proceeding_texts.append(text)
 
+        # join the speeches together is concat_proceedings is true, otherwise
+        # simply add all the speeches to the output
         if concat_proceedings:
-            corpus.append(' '.join(proceeding_texts))
+            output.append(' '.join(proceeding_texts))
         else:
-            corpus.extend(proceeding_texts)
+            output.extend(proceeding_texts)
 
-    with open(pickle_name, 'wb') as f:
-        pickle.dump(corpus, f)
+    # Pickle the output
+    if not os.path.exists(pickle_folder):
+        os.makedirs(pickle_folder)
 
-    return corpus
+    with open(pickle_path, 'wb') as f:
+        pickle.dump(output, f)
+
+    return output
 
 
-def get_newspaper(foldername, concat=False):
+def get_newspaper(foldername, concat=False, pickle_folder='pickle'):
     """
-    Return the newspaper data for all files in the given folder.
-    Output is a list of plaintext speeches.
+    Return the newspaper data for all files in the given folder. If concat is
+    True, all the articles are concatenated into a single string.
+    The output is a list of plaintext speeches.
     """
 
     # return the pickled version if it exists
-    pickle_path = f'{foldername}.pkl'
+    pickle_name = f'{foldername}.pkl'
+    pickle_path = os.path.join(pickle_folder, pickle_name)
     if os.path.exists(pickle_path):
         with open(pickle_path, 'rb') as f:
             articles = pickle.load(f)
@@ -156,6 +207,9 @@ def get_newspaper(foldername, concat=False):
             articles.append(full_text)
 
     # pickle the articles
+    if not os.path.exists(pickle_folder):
+        os.makedirs(pickle_folder)
+
     with open(pickle_path, 'wb') as f:
         pickle.dump(articles, f)
 

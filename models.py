@@ -1,30 +1,36 @@
+import zlib
 import os.path
 import threading
 import pickle
 
 import numpy as np
-from keras.layers import Dense, Dropout
-from keras.models import Sequential, load_model
-from keras.wrappers.scikit_learn import KerasClassifier
-from scipy import sparse
 from sklearn.externals import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
-from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import FunctionTransformer, StandardScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-import autosklearn.classification
 from nltk.tokenize import word_tokenize
-from sentistrength.senti_client import sentistrength
 from tabulate import tabulate
 from tqdm import tqdm
 
+import corpus
 
-class WeightedTfidfVectorizer:
+try:
+    from sentistrength.senti_client import sentistrength
+except:
+    print('Warning: sentistrength not found')
+
+
+class WeightedWordCountVectorizer:
+    """
+    Wordcount vectorizer, weighed by the difference in vocabulary between the
+    newspapers and the parliamentary data. Words get a higher weight if their
+    frequency is similar in both corpora.
+    """
     def __init__(self, newspaper_data):
-        self.countvec = CountVectorizer()
+        self.countvec = CountVectorizer(min_df=0.2, max_df=0.8)
         self.countvec_papers = CountVectorizer()
         self.paper_counts = self.countvec_papers.fit_transform(newspaper_data)
 
@@ -70,7 +76,6 @@ class WeightedTfidfVectorizer:
         print(tabulate(highest, headers=['Word', 'Weight', 'Count parliament', 'Count papers']))
         print()
 
-
         return self
 
     def transform(self, X):
@@ -89,6 +94,9 @@ class WeightedTfidfVectorizer:
 
 
 class SentimentVectorizer:
+    """
+    Vectorize the data based on sentiment values.
+    """
     def __init__(self, topics, lang='DE'):
         self.topics = topics
         self.senti = sentistrength(lang)
@@ -100,7 +108,10 @@ class SentimentVectorizer:
         return self
 
     def transform(self, X):
-        pkl_path = 'sentiment_avg.pkl'
+        # use a deterministic hash of the data to create the pickle path
+        h = zlib.adler32(''.join(X).encode('utf-8'))
+        pkl_path = f'pickle/sentiment_{h}.pkl'
+        print(pkl_path)
 
         if os.path.exists(pkl_path):
             print(f'Loading {pkl_path} from disk')
@@ -109,7 +120,7 @@ class SentimentVectorizer:
 
         sentiments = []
 
-        for sample in tqdm(X):
+        for sample in tqdm(X, desc='Sentimenting'):
             sample_sentiment = []
 
             for topic in self.topics:
@@ -142,107 +153,55 @@ class SentimentVectorizer:
         return np.array(sentiments)
 
 
-def ensure_dense(X):
-    """ If the input is a sparse matrix, convert it to a dense one. """
-    if sparse.issparse(X):
-        # todense() returns a matrix, so convert it to an array
-        return np.asarray(X.todense())
+def create_svm_model(k, method='tfidf', **kwargs):
+    """
+    Create an svm model with corresponding preprocessing pipeline.
+    The method parameter specifies how to vectorize the documents:
+      - tfidf: standard TF-IDF vectorization
+      - weighted: word counts weighted on vocabularity similarity between
+        2 corpora
+      - sentiment: vectorized by sentiment values for a specified set of words
+    """
+    if method == 'tfidf':
+        vectorizer = TfidfVectorizer()
+    elif method == 'weighted':
+        vectorizer = WeightedWordCountVectorizer(
+            [a for articles in [corpus.get_newspaper(paper, False)
+                                for paper in kwargs['newspapers']]
+             for a in articles])
+        k = 'all'
+    elif method == 'sentiment':
+        vectorizer = SentimentVectorizer(kwargs['topics'])
+
+    kbest = SelectKBest(chi2, k=k)
+    scaler = StandardScaler(with_mean=False)
+    svc = SVC(kernel='linear', probability=True)
+
+    if method == 'sentiment':
+        return make_pipeline(vectorizer, scaler), svc
     else:
-        return X
-
-
-def create_neuralnet(k, dropout, num_parties):
-    """ Create a simple feedforward Keras neural net with k inputs """
-    model = Sequential([
-        Dense(100, input_dim=k, activation='tanh'),
-        Dropout(dropout),
-        Dense(num_parties, activation='softmax'),
-    ])
-
-    model.compile(optimizer='nadam', loss='categorical_crossentropy',
-                  metrics=['accuracy'])
-    return model
-
-
-def create_svm_model(k):
-    vectorizer = TfidfVectorizer()
-    kbest = SelectKBest(chi2, k=k)
-
-    scaler = StandardScaler(with_mean=False)
-    svc = SVC(kernel='linear', probability=True)
-
-    return make_pipeline(vectorizer, kbest, scaler), svc
-
-
-def create_svm_sent_model(k, topics):
-    vectorizer = SentimentVectorizer(topics)
-    scaler = StandardScaler(with_mean=False)
-    svc = SVC(kernel='linear', probability=True)
-
-    return make_pipeline(vectorizer, scaler), svc
-
-
-def create_nb_model(k):
-    vectorizer = TfidfVectorizer()
-    kbest = SelectKBest(chi2, k=k)
-    unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
-    nb = MultinomialNB()
-
-    return make_pipeline(vectorizer, kbest, unsparse), nb
-
-
-def create_auto_model(k):
-    vectorizer = TfidfVectorizer()
-    kbest = SelectKBest(chi2, k=k)
-    auto = autosklearn.classification.AutoSklearnClassifier()
-
-    return make_pipeline(vectorizer, kbest), auto
-
-
-def create_model(k, epochs, dropout, num_parties):
-    """
-    Return an sklearn pipeline.
-    k: the number of features to select
-    """
-
-    # preprocessing steps: TFIDF vectorizer, dimensionality reduction,
-    # conversion from sparse to dense matrices because Keras doesn't support
-    # sparse, and input scaling
-    vectorizer = TfidfVectorizer()
-    kbest = SelectKBest(chi2, k=k)
-    unsparse = FunctionTransformer(ensure_dense, accept_sparse=True)
-    scaler = StandardScaler()
-
-    model = KerasClassifier(create_neuralnet, k=k, dropout=dropout,
-                            num_parties=num_parties,
-                            epochs=epochs, batch_size=32)
-
-    return make_pipeline(vectorizer, kbest, unsparse, scaler), model
+        return make_pipeline(vectorizer, kbest, scaler), svc
 
 
 def save_pipeline(pipeline, model, path, name):
+    """ Save a model and its preprocessing pipeline. """
+
+    # the postagger object has a lock which can't be pickled, so we need to
+    # remove it before saving and restore it afterwards
     if 'postaggertransformer' in pipeline.named_steps:
         pipeline.named_steps['postaggertransformer'].tagger.taggerlock = None
-
-    if isinstance(model, KerasClassifier):
-        nnet = model.model
-        nnet.save(f'{name}.h5')
-        model.model = None
 
     joblib.dump((pipeline, model), path)
 
     if 'postaggertransformer' in pipeline.named_steps:
         pipeline.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
 
-    if isinstance(model, KerasClassifier):
-        model.model = nnet
-
 
 def load_pipeline(path, name):
+    """ Load a model and its preprocessing pipeline. """
     pipeline, model = joblib.load(path)
-    if isinstance(model, KerasClassifier):
-        model.model = load_model(f'{name}.h5')
 
+    # restore the tagger's lock, which couldn't be save
     if 'postaggertransformer' in pipeline.named_steps:
         pipeline.named_steps['postaggertransformer'].tagger.taggerlock = threading.Lock()
 
